@@ -149,7 +149,7 @@ void TimeService::adoptTimeSnapshot(const time_t newAnchorEpoch, const uint64_t 
 }
 
 void TimeService::begin() {
-  // Use persistent TZ setting (defaults to CST-8 for UTC+8)
+  // Use persistent TZ setting (defaults to JST-9 for Japan deployments)
   setenv("TZ", SETTINGS.timeZone.c_str(), 1);
   tzset();
   loadPersistedSnapshot();
@@ -298,56 +298,7 @@ bool TimeService::syncTimeOverNtp() {
 }
 
 void TimeService::syncTimeZoneFromIp() {
-  LOG_DBG("TIME", "Detecting time zone from IP...");
-  std::string json;
-  if (!HttpDownloader::fetchUrl("http://worldtimeapi.org/api/ip", json)) {
-    LOG_ERR("TIME", "Failed to fetch time zone from IP");
-    return;
-  }
-
-  JsonDocument doc;
-  auto error = deserializeJson(doc, json);
-  if (error) {
-    LOG_ERR("TIME", "Failed to parse time zone JSON: %s", error.c_str());
-    return;
-  }
-
-  const char* utcOffset = doc["utc_offset"] | ""; // e.g., "+08:00"
-  const char* abbr = doc["abbreviation"] | "UTC"; // e.g., "CST"
-  
-  if (utcOffset[0] == '\0') {
-    LOG_ERR("TIME", "Invalid UTC offset in response");
-    return;
-  }
-
-  // Convert "+08:00" to POSIX TZ format: <ABBR><Offset>
-  // POSIX offset is POSITIVE for WEST of Greenwich.
-  // So UTC+8 is CST-8, UTC-5 is EST5.
-  char posixTz[32] = {};
-  int hours = 0;
-  int minutes = 0;
-  char sign = utcOffset[0];
-  sscanf(utcOffset + 1, "%d:%d", &hours, &minutes);
-
-  // POSIX offset is flipped
-  int posixOffset = -hours;
-  if (sign == '-') posixOffset = hours;
-
-  if (minutes == 0) {
-    snprintf(posixTz, sizeof(posixTz), "%s%d", abbr, posixOffset);
-  } else {
-    snprintf(posixTz, sizeof(posixTz), "%s%d:%02d", abbr, posixOffset, minutes);
-  }
-
-  if (SETTINGS.timeZone != posixTz) {
-    LOG_INF("TIME", "New time zone detected: %s (was %s)", posixTz, SETTINGS.timeZone.c_str());
-    SETTINGS.timeZone = posixTz;
-    setenv("TZ", posixTz, 1);
-    tzset();
-    SETTINGS.saveToFile();
-  } else {
-    LOG_DBG("TIME", "Time zone unchanged: %s", posixTz);
-  }
+  LOG_DBG("TIME", "Time zone sync from IP disabled for Japan-only distribution");
 }
 
 void TimeService::loadPersistedSnapshot() {
@@ -501,7 +452,7 @@ bool TimeService::syncIfDue() {
     WiFi.setSleep(false);
     synced = syncTimeOverNtp();
     if (synced) {
-      syncTimeZoneFromIp();
+      LOG_DBG("TIME", "NTP synced successfully; keeping fixed Japan timezone");
     }
   }
 
@@ -537,8 +488,7 @@ bool TimeService::syncNow() {
     LOG_INF("TIME", "WiFi connected, starting NTP...");
     synced = syncTimeOverNtp();
     if (synced) {
-      LOG_INF("TIME", "NTP success, fetching timezone...");
-      syncTimeZoneFromIp();
+      LOG_INF("TIME", "NTP success; keeping fixed Japan timezone");
     } else {
       LOG_ERR("TIME", "NTP sync failed");
     }
