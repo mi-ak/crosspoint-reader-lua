@@ -21,6 +21,8 @@ bool JsonSettingsIO::saveState(const CrossPointState& s, const char* path) {
   doc["lastSleepImage"] = s.lastSleepImage;
   doc["readerActivityLoadCount"] = s.readerActivityLoadCount;
   doc["lastSleepFromReader"] = s.lastSleepFromReader;
+  doc["lastSleepFromPlugin"] = s.lastSleepFromPlugin;
+  doc["lastPluginName"] = s.lastPluginName;
 
   String json;
   serializeJson(doc, json);
@@ -39,6 +41,8 @@ bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
   s.lastSleepImage = doc["lastSleepImage"] | (uint8_t)0;
   s.readerActivityLoadCount = doc["readerActivityLoadCount"] | (uint8_t)0;
   s.lastSleepFromReader = doc["lastSleepFromReader"] | false;
+  s.lastSleepFromPlugin = doc["lastSleepFromPlugin"] | false;
+  s.lastPluginName = doc["lastPluginName"] | std::string("");
   return true;
 }
 
@@ -71,6 +75,7 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   doc["longPressChapterSkip"] = s.longPressChapterSkip;
   doc["statusBarClock"] = s.statusBarClock;
   doc["hyphenationEnabled"] = s.hyphenationEnabled;
+  doc["sleepWhilePowered"] = s.sleepWhilePowered;
   doc["uiTheme"] = s.uiTheme;
   doc["fadingFix"] = s.fadingFix;
   doc["embeddedStyle"] = s.embeddedStyle;
@@ -130,6 +135,7 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   s.longPressChapterSkip = doc["longPressChapterSkip"] | (uint8_t)1;
   s.statusBarClock = doc["statusBarClock"] | (uint8_t)0;
   s.hyphenationEnabled = doc["hyphenationEnabled"] | (uint8_t)0;
+  s.sleepWhilePowered = doc["sleepWhilePowered"] | (uint8_t)0;
   s.uiTheme = doc["uiTheme"] | (uint8_t)S::LYRA;
   s.fadingFix = doc["fadingFix"] | (uint8_t)0;
   s.embeddedStyle = doc["embeddedStyle"] | (uint8_t)1;

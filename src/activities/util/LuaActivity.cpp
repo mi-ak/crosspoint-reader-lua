@@ -1,4 +1,5 @@
 #include "LuaActivity.h"
+#include "CrossPointState.h"
 #include "util/LuaManager.h"
 #include <HalDisplay.h>
 #include "fontIds.h"
@@ -37,17 +38,34 @@ void LuaActivity::loop() {
         return;
     }
 
+    if (fatalError) {
+        if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
+            mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+            onGoBack();
+        }
+        return;
+    }
+
     // Load script once
     if (!scriptLoaded) {
         LOG_INF("LUA", "Loading plugin '%s'", pluginName.c_str());
         if (!LuaManager::getInstance().runPlugin(pluginName)) {
-            showError("Failed to load script");
+            errorMessage = "Failed to load script";
+            fatalError = true;
+            clearPluginResumeState();
+            showError(errorMessage.c_str());
             scriptLoaded = true;
             return;
         }
         scriptLoaded = true;
         LOG_INF("LUA", "Script loaded, calling init()");
-        LuaManager::getInstance().callFunction("init");
+        if (!LuaManager::getInstance().callFunction("init")) {
+            errorMessage = "Plugin init failed";
+            fatalError = true;
+            clearPluginResumeState();
+            showError(errorMessage.c_str());
+            return;
+        }
     }
 
     // Wait for all buttons to be released before handing control to Lua.
@@ -60,7 +78,12 @@ void LuaActivity::loop() {
     }
 
     // Call Lua draw() every loop — Lua decides when to actually refresh the display
-    LuaManager::getInstance().callFunction("draw");
+    if (!LuaManager::getInstance().callFunction("draw")) {
+        errorMessage = "Plugin runtime error";
+        fatalError = true;
+        clearPluginResumeState();
+        showError(errorMessage.c_str());
+    }
 }
 
 void LuaActivity::showError(const char* msg) {
@@ -69,4 +92,10 @@ void LuaActivity::showError(const char* msg) {
     renderer.drawText(UI_12_FONT_ID, 20, 140, msg);
     renderer.drawText(UI_10_FONT_ID, 20, 300, "Press BACK to return");
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+}
+
+void LuaActivity::clearPluginResumeState() {
+    APP_STATE.lastSleepFromPlugin = false;
+    APP_STATE.lastPluginName.clear();
+    APP_STATE.saveToFile();
 }

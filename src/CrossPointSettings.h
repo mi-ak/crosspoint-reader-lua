@@ -161,6 +161,8 @@ class CrossPointSettings {
   uint8_t hideBatteryPercentage = HIDE_NEVER;
   // Long-press chapter skip on side buttons
   uint8_t longPressChapterSkip = 1;
+  // Sleep while USB powered
+  uint8_t sleepWhilePowered = 0;
   // UI Theme
   uint8_t uiTheme = FLOW;
   // Interface language

@@ -11,6 +11,8 @@ class CrossPointState {
   uint8_t lastSleepImage;
   uint8_t readerActivityLoadCount = 0;
   bool lastSleepFromReader = false;
+  bool lastSleepFromPlugin = false;
+  std::string lastPluginName;
   ~CrossPointState() = default;
 
   // Get singleton instance

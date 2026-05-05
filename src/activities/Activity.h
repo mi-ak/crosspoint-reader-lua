@@ -47,6 +47,8 @@ class Activity {
   virtual bool skipLoopDelay() { return false; }
   virtual bool preventAutoSleep() { return false; }
   virtual bool isReaderActivity() const { return false; }
+  virtual bool isLuaActivity() const { return false; }
+  virtual std::string getResumableActivityName() const { return std::string(); }
 
   // RAII helper to lock rendering mutex for the duration of a scope.
   class RenderLock {

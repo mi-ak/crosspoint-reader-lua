@@ -149,10 +149,17 @@ void waitForPowerRelease() {
   while (gpio.isPressed(HalGPIO::BTN_POWER)) { delay(50); gpio.update(); }
 }
 
+bool canEnterSleep() {
+  return !gpio.isUsbConnected() || SETTINGS.sleepWhilePowered;
+}
+
 void enterDeepSleep() {
+  if (!canEnterSleep()) return;
   static bool isEnteringSleep = false; if (isEnteringSleep) return; isEnteringSleep = true;
   HalPowerManager::Lock powerLock;
   APP_STATE.lastSleepFromReader = currentActivity && currentActivity->isReaderActivity();
+  APP_STATE.lastSleepFromPlugin = currentActivity && currentActivity->isLuaActivity();
+  APP_STATE.lastPluginName = currentActivity ? currentActivity->getResumableActivityName() : std::string();
   APP_STATE.saveToFile();
   exitActivity();
   currentActivity = new SleepActivity(renderer, mappedInputManager);
@@ -162,8 +169,11 @@ void enterDeepSleep() {
 }
 
 void enterLightSleep() {
+  if (!canEnterSleep()) return;
   HalPowerManager::Lock powerLock;
   APP_STATE.lastSleepFromReader = currentActivity && currentActivity->isReaderActivity();
+  APP_STATE.lastSleepFromPlugin = currentActivity && currentActivity->isLuaActivity();
+  APP_STATE.lastPluginName = currentActivity ? currentActivity->getResumableActivityName() : std::string();
   APP_STATE.saveToFile();
   exitActivity();
   currentActivity = new SleepActivity(renderer, mappedInputManager);
@@ -196,11 +206,17 @@ void onGoToMyLibraryWithPath(const std::string& path) {
   enterNewActivity(new MyLibraryActivity(renderer, mappedInputManager, onGoHome, onGoToReader, path));
 }
 
+void onGoToLuaPlugin(const std::string& pluginName);
+
 void onGoToLuaPlugins() {
   enterNewActivity(new PluginListActivity(renderer, mappedInputManager, 
     [](const std::string& name) {
         enterNewActivity(new LuaActivity(renderer, mappedInputManager, name, onGoToLuaPlugins));
     }, onGoHome));
+}
+
+void onGoToLuaPlugin(const std::string& pluginName) {
+  enterNewActivity(new LuaActivity(renderer, mappedInputManager, pluginName, onGoToLuaPlugins));
 }
 
 void onGoHome() {
@@ -256,10 +272,26 @@ void setup() {
   exitActivity();
   enterNewActivity(new BootActivity(renderer, mappedInputManager));
   APP_STATE.loadFromFile(); RECENT_BOOKS.loadFromFile(); READING_STATS.loadFromFile();
-  if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader || mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
-    onGoHome();
+
+  auto clearPluginResumeState = []() {
+    if (APP_STATE.lastSleepFromPlugin || !APP_STATE.lastPluginName.empty()) {
+      APP_STATE.lastSleepFromPlugin = false;
+      APP_STATE.lastPluginName.clear();
+      APP_STATE.saveToFile();
+    }
+  };
+
+  if (APP_STATE.lastSleepFromPlugin && !APP_STATE.lastPluginName.empty() && !mappedInputManager.isPressed(MappedInputManager::Button::Back)) {
+    std::string pluginName = APP_STATE.lastPluginName;
+    clearPluginResumeState();
+    onGoToLuaPlugin(pluginName);
   } else {
-    std::string p = APP_STATE.openEpubPath; APP_STATE.openEpubPath = ""; APP_STATE.readerActivityLoadCount++; APP_STATE.saveToFile(); onGoToReader(p);
+    clearPluginResumeState();
+    if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader || mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
+      onGoHome();
+    } else {
+      std::string p = APP_STATE.openEpubPath; APP_STATE.openEpubPath = ""; APP_STATE.readerActivityLoadCount++; APP_STATE.saveToFile(); onGoToReader(p);
+    }
   }
   waitForPowerRelease();
 }
