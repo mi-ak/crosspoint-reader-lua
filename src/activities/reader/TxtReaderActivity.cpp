@@ -39,12 +39,6 @@ void TxtReaderActivity::onEnter() {
     case CrossPointSettings::ORIENTATION::PORTRAIT:
       renderer.setOrientation(GfxRenderer::Orientation::Portrait);
       break;
-    case CrossPointSettings::ORIENTATION::LANDSCAPE_CW:
-      renderer.setOrientation(GfxRenderer::Orientation::LandscapeClockwise);
-      break;
-    case CrossPointSettings::ORIENTATION::INVERTED:
-      renderer.setOrientation(GfxRenderer::Orientation::PortraitInverted);
-      break;
     case CrossPointSettings::ORIENTATION::LANDSCAPE_CCW:
       renderer.setOrientation(GfxRenderer::Orientation::LandscapeCounterClockwise);
       break;
@@ -164,16 +158,12 @@ void TxtReaderActivity::loop() {
           break;
         case 3: { // Orientation
           inMenu = false;
-          uint8_t nextOrientation = (SETTINGS.orientation + 1) % 4;
+          uint8_t nextOrientation = (SETTINGS.orientation + 1) % CrossPointSettings::ORIENTATION_COUNT;
           SETTINGS.orientation = nextOrientation;
           SETTINGS.saveToFile();
           switch (nextOrientation) {
             case CrossPointSettings::ORIENTATION::PORTRAIT:
               renderer.setOrientation(GfxRenderer::Orientation::Portrait); break;
-            case CrossPointSettings::ORIENTATION::LANDSCAPE_CW:
-              renderer.setOrientation(GfxRenderer::Orientation::LandscapeClockwise); break;
-            case CrossPointSettings::ORIENTATION::INVERTED:
-              renderer.setOrientation(GfxRenderer::Orientation::PortraitInverted); break;
             case CrossPointSettings::ORIENTATION::LANDSCAPE_CCW:
               renderer.setOrientation(GfxRenderer::Orientation::LandscapeCounterClockwise); break;
             default: break;
@@ -280,8 +270,13 @@ void TxtReaderActivity::initializeReader() {
   renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
                                    &orientedMarginLeft);
   orientedMarginTop += cachedScreenMargin;
-  orientedMarginLeft += cachedScreenMargin;
-  orientedMarginRight += cachedScreenMargin;
+  if (SETTINGS.orientation == CrossPointSettings::LANDSCAPE_CCW) {
+    orientedMarginLeft += cachedScreenMargin + 48;
+    orientedMarginRight += cachedScreenMargin + 48;
+  } else {
+    orientedMarginLeft += cachedScreenMargin;
+    orientedMarginRight += cachedScreenMargin;
+  }
   orientedMarginBottom += cachedScreenMargin;
 
   const auto& metrics = UITheme::getInstance().getMetrics();

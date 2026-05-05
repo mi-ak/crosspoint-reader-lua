@@ -9,10 +9,43 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "LibraryStore.h"
 #include "util/StringUtils.h"
+#include "Epub.h"
+#include "Xtc.h"
+#include "Bitmap.h"
+#include <unordered_map>
 
 namespace {
 constexpr unsigned long GO_HOME_MS = 1000;
+std::unordered_map<std::string, std::string> g_folderThumbCache;
+
+void maskTopCorners(const GfxRenderer& renderer, int x, int y, int w, int h, int r) {
+  for (int dy = 0; dy < r; dy++) {
+    for (int dx = 0; dx < r; dx++) {
+      if ((r - dx) * (r - dx) + (r - dy) * (r - dy) > r * r) {
+        renderer.drawPixel(x + dx, y + dy, false);                  // TL
+        renderer.drawPixel(x + w - 1 - dx, y + dy, false);          // TR
+      }
+    }
+  }
+}
+
+void maskBottomCorners(const GfxRenderer& renderer, int x, int y, int w, int h, int r) {
+  for (int dy = 0; dy < r; dy++) {
+    for (int dx = 0; dx < r; dx++) {
+      if ((r - dx) * (r - dx) + (r - dy) * (r - dy) > r * r) {
+        renderer.drawPixel(x + dx, y + h - 1 - dy, false);          // BL
+        renderer.drawPixel(x + w - 1 - dx, y + h - 1 - dy, false);  // BR
+      }
+    }
+  }
+}
+
+void maskCorners(const GfxRenderer& renderer, int x, int y, int w, int h, int r) {
+  maskTopCorners(renderer, x, y, w, h, r);
+  maskBottomCorners(renderer, x, y, w, h, r);
+}
 
 void sortFileList(std::vector<std::string>& strs) {
   std::sort(begin(strs), end(strs), [](const std::string& str1, const std::string& str2) {
@@ -100,6 +133,9 @@ void MyLibraryActivity::loadFiles() {
   }
   root.close();
   sortFileList(files);
+  LIBRARY_STORE.scanFolder(basepath);
+  invalidateCache();
+  freePageBuffer(); // Invalidate snapshot when files change
 }
 
 void MyLibraryActivity::onEnter() {
@@ -107,6 +143,8 @@ void MyLibraryActivity::onEnter() {
 
   loadFiles();
   selectorIndex = 0;
+  invalidateCache();
+  freePageBuffer();
   skipNextButtonCheck = true;
   requestUpdate();
 }
@@ -114,6 +152,36 @@ void MyLibraryActivity::onEnter() {
 void MyLibraryActivity::onExit() {
   Activity::onExit();
   files.clear();
+  freePageBuffer();
+}
+
+bool MyLibraryActivity::storePageBuffer() {
+  uint8_t* frameBuffer = renderer.getFrameBuffer();
+  if (!frameBuffer) return false;
+  freePageBuffer();
+  const size_t sz = GfxRenderer::getBufferSize();
+  pageBuffer = static_cast<uint8_t*>(malloc(sz));
+  if (!pageBuffer) return false;
+  memcpy(pageBuffer, frameBuffer, sz);
+  pageBufferStored = true;
+  return true;
+}
+
+bool MyLibraryActivity::restorePageBuffer() {
+  if (!pageBuffer || !pageBufferStored) return false;
+  uint8_t* frameBuffer = renderer.getFrameBuffer();
+  if (!frameBuffer) return false;
+  memcpy(frameBuffer, pageBuffer, GfxRenderer::getBufferSize());
+  return true;
+}
+
+void MyLibraryActivity::freePageBuffer() {
+  if (pageBuffer) {
+    free(pageBuffer);
+    pageBuffer = nullptr;
+  }
+  pageBufferStored = false;
+  pageRendered = false;
 }
 
 void MyLibraryActivity::loop() {
@@ -124,9 +192,9 @@ void MyLibraryActivity::loop() {
     return;
   }
 
-  // --- Delete menu state ---
-  if (menuState == MenuState::Delete || menuState == MenuState::Confirm) {
-    const int optCount = 2;
+  // --- Menu States (ContextMenu / ConfirmDelete) ---
+  if (menuState != MenuState::None) {
+    int optCount = (menuState == MenuState::ContextMenu) ? 3 : 2;
     if (mappedInput.wasPressed(MappedInputManager::Button::Right) ||
         mappedInput.wasPressed(MappedInputManager::Button::Down)) {
       menuSelectedIndex = (menuSelectedIndex + 1) % optCount;
@@ -138,23 +206,23 @@ void MyLibraryActivity::loop() {
       requestUpdate();
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      if (menuState == MenuState::Delete) {
-        if (menuSelectedIndex == 0) {  // Delete
-          menuState = MenuState::Confirm;
-          menuSelectedIndex = 1;  // Default to No (safer)
-          requestUpdate();
-        } else {  // Cancel
+      if (menuState == MenuState::ContextMenu) {
+        if (menuSelectedIndex == 0) { // Toggle View Mode
+          viewMode = (viewMode == ViewMode::Grid) ? ViewMode::List : ViewMode::Grid;
           menuState = MenuState::None;
-          requestUpdate();
-        }
-      } else {  // Confirm
-        if (menuSelectedIndex == 0) {  // Yes
-          deleteSelectedFile();
-        } else {  // No
+          selectorIndex = 0; // Reset index when switching modes for simplicity
+          freePageBuffer();
+        } else if (menuSelectedIndex == 1) { // Delete
+          menuState = MenuState::ConfirmDelete;
+          menuSelectedIndex = 1; // Default to "No"
+        } else { // Cancel
           menuState = MenuState::None;
-          requestUpdate();
         }
+      } else if (menuState == MenuState::ConfirmDelete) {
+        if (menuSelectedIndex == 0) deleteSelectedFile();
+        else menuState = MenuState::None;
       }
+      requestUpdate();
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       menuState = MenuState::None;
@@ -163,93 +231,99 @@ void MyLibraryActivity::loop() {
     return;
   }
 
-  // Long press BACK (1s+) goes to root folder
-  if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= GO_HOME_MS &&
-      basepath != "/") {
-    basepath = "/";
-    loadFiles();
-    selectorIndex = 0;
-    return;
-  }
-
-  // Long press Confirm (600ms) opens delete menu (files only, not directories)
-  if (!files.empty() && files[selectorIndex].back() != '/' &&
-      mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, 600)) {
-    menuState = MenuState::Delete;
-    menuSelectedIndex = 1;  // Default to Cancel (safer)
+  // --- Long Press Detection on Confirm (Context Menu) ---
+  if (!files.empty() && mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, 600)) {
+    menuState = MenuState::ContextMenu;
+    menuSelectedIndex = 0;
     requestUpdate();
     return;
   }
 
-  const int pageItems = UITheme::getInstance().getNumberOfItemsPerPage(renderer, true, false, true, false);
-
+  // --- Normal Navigation ---
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (files.empty()) {
-      return;
-    }
+    if (files.empty()) return;
 
-    if (basepath.back() != '/') basepath += "/";
+    std::string prefix = basepath;
+    if (prefix.back() != '/') prefix += "/";
+    
     if (files[selectorIndex].back() == '/') {
-      basepath += files[selectorIndex].substr(0, files[selectorIndex].length() - 1);
+      basepath = prefix + files[selectorIndex].substr(0, files[selectorIndex].length() - 1);
       loadFiles();
       selectorIndex = 0;
       requestUpdate();
     } else {
-      onSelectBook(basepath + files[selectorIndex]);
+      onSelectBook(prefix + files[selectorIndex]);
       return;
     }
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    // Short press: go up one directory, or go home if at root
-    if (mappedInput.getHeldTime() < GO_HOME_MS) {
-      if (basepath != "/") {
-        const std::string oldPath = basepath;
-
-        basepath.replace(basepath.find_last_of('/'), std::string::npos, "");
-        if (basepath.empty()) basepath = "/";
-        loadFiles();
-
-        const auto pos = oldPath.find_last_of('/');
-        const std::string dirName = oldPath.substr(pos + 1) + "/";
-        selectorIndex = findEntry(dirName);
-
-        requestUpdate();
-      } else {
-        onGoHome();
-      }
+    if (basepath != "/books") {
+      const std::string oldPath = basepath;
+      size_t lastSlash = basepath.find_last_of('/');
+      basepath = basepath.substr(0, lastSlash);
+      if (basepath == "/books" || basepath.empty()) basepath = "/books";
+      
+      loadFiles();
+      // Select the directory we just came out of
+      size_t lastSlashOld = oldPath.find_last_of('/');
+      std::string dirName = oldPath.substr(lastSlashOld + 1) + "/";
+      selectorIndex = findEntry(dirName);
+      
+      requestUpdate();
+    } else {
+      onGoHome();
     }
   }
 
   int listSize = static_cast<int>(files.size());
-  buttonNavigator.onNextRelease([this, listSize] {
+  int itemsPerPage = (viewMode == ViewMode::Grid) ? 9 : UITheme::getInstance().getNumberOfItemsPerPage(renderer, true, false, true, false);
+
+  buttonNavigator.onNextRelease([this, listSize, itemsPerPage] {
+    size_t oldPage = selectorIndex / itemsPerPage;
     selectorIndex = ButtonNavigator::nextIndex(static_cast<int>(selectorIndex), listSize);
+    if (selectorIndex / itemsPerPage != oldPage) {
+        freePageBuffer(); // New page
+    }
     requestUpdate();
   });
 
-  buttonNavigator.onPreviousRelease([this, listSize] {
+  buttonNavigator.onPreviousRelease([this, listSize, itemsPerPage] {
+    size_t oldPage = selectorIndex / itemsPerPage;
     selectorIndex = ButtonNavigator::previousIndex(static_cast<int>(selectorIndex), listSize);
+    if (selectorIndex / itemsPerPage != oldPage) {
+        freePageBuffer(); // New page
+    }
     requestUpdate();
   });
 
-  buttonNavigator.onNextContinuous([this, listSize, pageItems] {
-    selectorIndex = ButtonNavigator::nextPageIndex(static_cast<int>(selectorIndex), listSize, pageItems);
+  buttonNavigator.onNextContinuous([this, listSize, itemsPerPage] {
+    selectorIndex = ButtonNavigator::nextPageIndex(static_cast<int>(selectorIndex), listSize, itemsPerPage);
+    freePageBuffer(); // Page change
     requestUpdate();
   });
 
-  buttonNavigator.onPreviousContinuous([this, listSize, pageItems] {
-    selectorIndex = ButtonNavigator::previousPageIndex(static_cast<int>(selectorIndex), listSize, pageItems);
+  buttonNavigator.onPreviousContinuous([this, listSize, itemsPerPage] {
+    selectorIndex = ButtonNavigator::previousPageIndex(static_cast<int>(selectorIndex), listSize, itemsPerPage);
+    freePageBuffer(); // Page change
     requestUpdate();
   });
 }
 
 void MyLibraryActivity::deleteSelectedFile() {
   if (files.empty() || selectorIndex >= files.size()) return;
+  
   std::string prefix = basepath;
   if (prefix.back() != '/') prefix += "/";
   std::string fullPath = prefix + files[selectorIndex];
 
-  Storage.remove(fullPath.c_str());
+  if (files[selectorIndex].back() == '/') {
+    Storage.removeDir(fullPath.c_str());
+  } else {
+    Storage.remove(fullPath.c_str());
+  }
+  
+  LIBRARY_STORE.scanFolder(basepath);
   RECENT_BOOKS.cleanupMissingBooks();
 
   loadFiles();
@@ -260,86 +334,337 @@ void MyLibraryActivity::deleteSelectedFile() {
   requestUpdate();
 }
 
-void MyLibraryActivity::renderDeleteMenu() const {
-  const int sw = renderer.getScreenWidth();
-  const int sh = renderer.getScreenHeight();
-  const int mw = 280, mh = 130;
-  const int mx = (sw - mw) / 2, my = (sh - mh) / 2;
-
-  renderer.fillRoundedRect(mx, my, mw, mh, 10, Color::White);
-  renderer.drawRoundedRect(mx, my, mw, mh, 2, 10, true);
-
-  const char* opts[] = {"Delete File", "Cancel"};
-  for (int i = 0; i < 2; i++) {
-    const int ry = my + 20 + i * 50;
-    if (menuSelectedIndex == i) {
-      renderer.fillRoundedRect(mx + 10, ry - 5, mw - 20, 38, 6, Color::Black);
-    }
-    renderer.drawText(UI_12_FONT_ID, mx + 20, ry + 2, opts[i], menuSelectedIndex != i);
-  }
-}
-
-void MyLibraryActivity::renderConfirmDialog() const {
-  const int sw = renderer.getScreenWidth();
-  const int sh = renderer.getScreenHeight();
-  const int mw = 280, mh = 160;
-  const int mx = (sw - mw) / 2, my = (sh - mh) / 2;
-
-  renderer.fillRoundedRect(mx, my, mw, mh, 10, Color::White);
-  renderer.drawRoundedRect(mx, my, mw, mh, 2, 10, true);
-  renderer.drawText(UI_12_FONT_ID, mx + 20, my + 18, "Delete this file?");
-
-  const char* opts[] = {"Yes", "No"};
-  for (int i = 0; i < 2; i++) {
-    const int ry = my + 60 + i * 50;
-    if (menuSelectedIndex == i) {
-      renderer.fillRoundedRect(mx + 10, ry - 5, mw - 20, 38, 6, Color::Black);
-    }
-    renderer.drawText(UI_12_FONT_ID, mx + 20, ry + 2, opts[i], menuSelectedIndex != i);
-  }
-}
-
-std::string getFileName(std::string filename) {
-  if (filename.back() == '/') {
-    return filename.substr(0, filename.length() - 1);
-  }
-  const auto pos = filename.rfind('.');
-  return filename.substr(0, pos);
-}
-
 void MyLibraryActivity::render(Activity::RenderLock&&) {
   renderer.clearScreen();
 
   const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
   const auto& metrics = UITheme::getInstance().getMetrics();
 
-  std::string folderName = (basepath == "/") ? tr(STR_SD_CARD) : basepath.substr(basepath.rfind('/') + 1);
+  std::string folderName = (basepath == "/books") ? tr(STR_SD_CARD) : basepath.substr(basepath.rfind('/') + 1);
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, folderName.c_str());
 
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
   if (files.empty()) {
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, contentTop + 20, tr(STR_NO_BOOKS_FOUND));
+    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, metrics.topPadding + metrics.headerHeight + 20, tr(STR_NO_BOOKS_FOUND));
   } else {
-    GUI.drawList(
-        renderer, Rect{0, contentTop, pageWidth, contentHeight}, files.size(), selectorIndex,
-        [this](int index) { return getFileName(files[index]); }, nullptr,
-        [this](int index) { return UITheme::getFileIcon(files[index]); });
-
-    const int pageItems   = UITheme::getInstance().getNumberOfItemsPerPage(renderer, true, false, true, false);
-    const int totalFiles  = static_cast<int>(files.size());
-    const int totalPages  = (pageItems > 0) ? (totalFiles + pageItems - 1) / pageItems : 1;
-    // Page number display removed per user request (redundant with scroll bar)
+    if (viewMode == ViewMode::Grid) {
+      renderGallery();
+    } else {
+      renderList();
+    }
   }
 
   const auto labels = mappedInput.mapLabels(BaseTheme::HINT_BACK, BaseTheme::HINT_OK, BaseTheme::HINT_PREV, BaseTheme::HINT_NEXT);
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  if (menuState == MenuState::Delete)  renderDeleteMenu();
-  if (menuState == MenuState::Confirm) renderConfirmDialog();
+  if (menuState == MenuState::ContextMenu) renderContextMenu();
+  if (menuState == MenuState::ConfirmDelete) renderConfirmDelete();
 
   renderer.displayBuffer();
+}
+
+void MyLibraryActivity::renderList() const {
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+
+  GUI.drawList(
+      renderer, Rect{0, contentTop, pageWidth, contentHeight}, files.size(), selectorIndex,
+      [this](int index) { 
+        std::string name = files[index];
+        if (name.back() == '/') return name.substr(0, name.length() - 1);
+        auto pos = name.rfind('.');
+        return (pos != std::string::npos) ? name.substr(0, pos) : name;
+      }, nullptr,
+      [this](int index) { return UITheme::getFileIcon(files[index]); });
+}
+
+void MyLibraryActivity::updatePageCache(int pageStart, int count) {
+  if (cachedPageStart == pageStart && (int)pageCache.size() == count) return;
+
+  pageCache.clear();
+  pageCache.reserve(count);
+
+  for (int i = 0; i < count; ++i) {
+    int index = pageStart + i;
+    const std::string& name = files[index];
+    ItemRenderCache item;
+    item.path = name;
+    item.isDir = name.back() == '/';
+
+    if (item.isDir) {
+      // Word-wrap once and cache
+      std::string dirName = name.substr(0, name.length() - 1);
+      const int maxLineW = 123 - 6; // coverWidth - 6
+      std::string remaining = dirName;
+      while (!remaining.empty() && (int)item.wrappedName.size() < 4) {
+        int len = (int)remaining.size();
+        while (len > 0 && renderer.getTextWidth(NOTOSANS_12_FONT_ID, remaining.substr(0, len).c_str()) > maxLineW) {
+          len--;
+        }
+        if (len < (int)remaining.size()) {
+          int breakAt = remaining.rfind(' ', len);
+          if (breakAt == (int)std::string::npos || breakAt == 0) breakAt = len;
+          item.wrappedName.push_back(remaining.substr(0, breakAt));
+          remaining = remaining.substr(breakAt);
+          if (!remaining.empty() && remaining[0] == ' ') remaining = remaining.substr(1);
+        } else {
+          item.wrappedName.push_back(remaining);
+          remaining.clear();
+        }
+      }
+      // NEW: Count files inside for the folder badge and find first thumbnail (with 20-file limit/cache)
+      std::string prefix = basepath;
+      if (prefix.back() != '/') prefix += "/";
+      std::string fullPath = prefix + name;
+      
+      auto cacheIt = g_folderThumbCache.find(fullPath);
+      if (cacheIt != g_folderThumbCache.end()) {
+        item.hasFolderThumb = true;
+        item.folderThumbPath = cacheIt->second;
+      }
+
+      auto dir = Storage.open(fullPath.c_str());
+      if (dir && dir.isDirectory()) {
+        item.fileCount = 0;
+        int checkLimit = 20;
+        for (auto f = dir.openNextFile(); f; f = dir.openNextFile()) {
+          char fname[256];
+          f.getName(fname, sizeof(fname));
+          if (fname[0] != '.' && strcmp(fname, "System Volume Information") != 0 && !f.isDirectory()) {
+            item.fileCount++;
+            if (!item.hasFolderThumb && checkLimit > 0) {
+              checkLimit--;
+              std::string bookPath = fullPath + std::string(fname);
+              std::string sDir = LibraryStore::getStorageDirForPath(bookPath);
+              std::string tPath = "/.crosspoint/" + sDir + "/thumb_180.bmp";
+              if (Storage.exists(tPath.c_str())) {
+                item.hasFolderThumb = true;
+                item.folderThumbPath = tPath;
+                g_folderThumbCache[fullPath] = tPath;
+              }
+            }
+          }
+          f.close();
+        }
+        dir.close();
+      }
+    } else {
+      // Check thumbnail existence once and cache
+      std::string prefix = basepath;
+      if (prefix.back() != '/') prefix += "/";
+      std::string fullPath = prefix + name;
+      std::string sDir = LibraryStore::getStorageDirForPath(fullPath);
+      item.thumbPath = "/.crosspoint/" + sDir + "/thumb_180.bmp";
+      item.hasThumb = Storage.exists(item.thumbPath.c_str());
+    }
+    pageCache.push_back(std::move(item));
+  }
+  cachedPageStart = pageStart;
+}
+
+void MyLibraryActivity::renderGallery() {
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+
+  const int columns      = 3;
+  const int itemsPerPage = 9;
+  const int contentTop   = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int gridTopOffset = 20;
+  const int coverHeight  = 180;
+  const int coverWidth   = 123;
+  const int rowSpacing   = metrics.verticalSpacing + 15;
+  const int totalGridWidth = (columns * coverWidth) + ((columns - 1) * metrics.verticalSpacing);
+  const int startXOffset = (pageWidth - totalGridWidth) / 2;
+
+  const int totalItems  = static_cast<int>(files.size());
+  const int totalPages  = (totalItems + itemsPerPage - 1) / itemsPerPage;
+  const int currentPage = (totalPages > 0) ? (selectorIndex / itemsPerPage) : 0;
+  const int pageStart   = currentPage * itemsPerPage;
+  const int pageCount   = std::min(itemsPerPage, totalItems - pageStart);
+
+  updatePageCache(pageStart, pageCount);
+
+  bool bufferRestored = pageBufferStored && restorePageBuffer();
+
+  if (!bufferRestored || !pageRendered) {
+    // Note: Do NOT clearScreen() here, as render() already drew the Header.
+
+    for (int i = 0; i < pageCount; ++i) {
+      const auto& item = pageCache[i];
+      int index = pageStart + i;
+      int col   = i % columns;
+      int row   = i / columns;
+      int x     = startXOffset + col * (coverWidth + metrics.verticalSpacing);
+      int y     = contentTop + gridTopOffset + row * (coverHeight + rowSpacing);
+
+      if (item.isDir) {
+        // Kindle-style Folder look: Two horizontal lines on top for 'stacked' effect
+        renderer.fillRectDither(x + 6, y - 8, coverWidth - 12, 3, Color::DarkGray);
+        renderer.fillRectDither(x + 4, y - 4, coverWidth - 8, 3, Color::DarkGray);
+
+        // Main Card
+        renderer.fillRoundedRect(x, y, coverWidth, coverHeight, 4, Color::White);
+        
+        // Top background thumbnail (60% = 108px)
+        if (item.hasFolderThumb) {
+          FsFile file;
+          if (Storage.openFileForRead("HOME", item.folderThumbPath, file)) {
+            Bitmap bmp(file);
+            if (bmp.parseHeaders() == BmpReaderError::Ok) {
+              int drawW = std::min((int)bmp.getWidth(), coverWidth);
+              renderer.drawBitmap(bmp, x + (coverWidth - drawW) / 2, y, 0, 0);
+              maskTopCorners(renderer, x, y, coverWidth, 108, 4);
+            }
+            file.close();
+          }
+        }
+
+        // Bottom Gray Section
+        const int grayHeight = 72;
+        const int grayY = y + coverHeight - grayHeight;
+        renderer.fillRoundedRect(x, grayY, coverWidth, grayHeight, 4, false, false, true, true, Color::LightGray);
+        renderer.drawRoundedRect(x, y, coverWidth, coverHeight, 1, 4, true);
+        
+        const int lineH = 24;
+        int totalTextH = (int)item.wrappedName.size() * lineH;
+        int curLineY = grayY + (grayHeight - totalTextH) / 2;
+        for (const auto& line : item.wrappedName) {
+          int tw = renderer.getTextWidth(NOTOSANS_12_FONT_ID, line.c_str());
+          renderer.drawText(NOTOSANS_12_FONT_ID, x + (coverWidth - tw) / 2, curLineY, line.c_str());
+          curLineY += lineH;
+        }
+        maskBottomCorners(renderer, x, y, coverWidth, coverHeight, 4);
+
+        if (item.fileCount >= 0) {
+          std::string countStr = std::to_string(item.fileCount);
+          int tw = renderer.getTextWidth(SMALL_FONT_ID, countStr.c_str());
+          int radius = 12;
+          int bx = x + coverWidth - radius - 6;
+          int by = y + radius + 6;
+          renderer.fillCircle(bx, by, radius, Color::Black);
+          renderer.drawText(SMALL_FONT_ID, bx - tw / 2, by - renderer.getLineHeight(SMALL_FONT_ID) / 2, countStr.c_str(), Color::White);
+        }
+      } else {
+        bool drawnThumb = false;
+        if (item.hasThumb) {
+          FsFile file;
+          if (Storage.openFileForRead("HOME", item.thumbPath, file)) {
+            Bitmap bmp(file);
+            if (bmp.parseHeaders() == BmpReaderError::Ok) {
+              renderer.drawBitmap(bmp, x + (coverWidth  - bmp.getWidth())  / 2,
+                                       y + (coverHeight - bmp.getHeight()) / 2,
+                                       bmp.getWidth(), bmp.getHeight());
+              drawnThumb = true;
+              maskCorners(renderer, x + (coverWidth - bmp.getWidth()) / 2, y + (coverHeight - bmp.getHeight()) / 2,
+                          bmp.getWidth(), bmp.getHeight(), 4);
+              renderer.drawRoundedRect(x, y, coverWidth, coverHeight, 1, 4, true);
+            }
+            file.close();
+          }
+        }
+        if (!drawnThumb) {
+          std::string failedPath = item.thumbPath + ".failed";
+          if (!item.hasThumb && !Storage.exists(failedPath.c_str())) {
+            GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+            std::string prefix = basepath; if (prefix.back() != '/') prefix += "/";
+            std::string fullPath = prefix + item.path;
+            bool success = false;
+            if (StringUtils::checkFileExtension(fullPath, ".epub")) {
+              Epub epub(fullPath, "/.crosspoint");
+              if (epub.load(true, true)) success = epub.generateThumbBmp(180);
+            } else if (StringUtils::checkFileExtension(fullPath, ".xtc") || StringUtils::checkFileExtension(fullPath, ".xtch")) {
+              Xtc xtc(fullPath, "/.crosspoint");
+              if (xtc.load()) success = xtc.generateThumbBmp(180);
+            }
+            if (!success) Storage.writeFile(failedPath.c_str(), "failed");
+            invalidateCache();
+            requestUpdate();
+            return;
+          }
+          renderer.drawRoundedRect(x, y, coverWidth, coverHeight, 1, 4, true);
+          renderer.fillRoundedRect(x + 1, y + 1, coverWidth - 2, coverHeight - 2, 4, Color::White);
+          const uint8_t* icon = BaseTheme::iconForName(UIIcon::Book, 32);
+          if (icon) renderer.drawIcon(icon, x + (coverWidth - 32) / 2, y + (coverHeight - 32) / 2, 32, 32);
+        }
+      }
+    }
+
+    // Page indicator
+    if (totalPages > 1) {
+      const int dotSize    = 8;
+      const int dotSpacing = 8;
+      const int totalDotW  = (totalPages * dotSize) + ((totalPages - 1) * dotSpacing);
+      const int startX     = (pageWidth - totalDotW) / 2;
+      const int dotY       = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - 4;
+      for (int p = 0; p < totalPages; p++) {
+        int ix = startX + p * (dotSize + dotSpacing);
+        if (p == currentPage) renderer.fillRect(ix, dotY, dotSize, dotSize, true);
+        else renderer.drawRect(ix, dotY, dotSize, dotSize, true);
+      }
+    }
+
+    // Store SnapShot (Header + Thumbs + Dots)
+    pageRendered = true;
+    storePageBuffer();
+  }
+
+  // Selection Border (Always top)
+  for (int i = 0; i < pageCount; ++i) {
+    int col = i % columns;
+    int row = i / columns;
+    int x   = startXOffset + col * (coverWidth + metrics.verticalSpacing);
+    int y   = contentTop + gridTopOffset + row * (coverHeight + rowSpacing);
+    if (selectorIndex == (pageStart + i)) {
+      renderer.drawRoundedRect(x - 2, y - 2, coverWidth + 4, coverHeight + 4, 3, 5, true);
+    }
+  }
+}
+
+void MyLibraryActivity::renderContextMenu() const {
+  const int sw = renderer.getScreenWidth();
+  const int sh = renderer.getScreenHeight();
+  const int mw = 300, mh = 180;
+  const int mx = (sw - mw) / 2, my = (sh - mh) / 2;
+
+  renderer.fillRoundedRect(mx, my, mw, mh, 12, Color::White);
+  renderer.drawRoundedRect(mx, my, mw, mh, 3, 12, true);
+
+  const char* opts[] = {
+    (viewMode == ViewMode::Grid) ? "Switch to List View" : "Switch to Grid View",
+    "Delete File / Folder",
+    "Cancel"
+  };
+
+  for (int i = 0; i < 3; i++) {
+    int ry = my + 20 + i * 50;
+    if (menuSelectedIndex == i) {
+      renderer.fillRoundedRect(mx + 10, ry - 5, mw - 20, 42, 8, Color::Black);
+    }
+    renderer.drawText(UI_12_FONT_ID, mx + 20, ry + 4, opts[i], menuSelectedIndex != i);
+  }
+}
+
+void MyLibraryActivity::renderConfirmDelete() const {
+  const int sw = renderer.getScreenWidth();
+  const int sh = renderer.getScreenHeight();
+  const int mw = 300, mh = 160;
+  const int mx = (sw - mw) / 2, my = (sh - mh) / 2;
+
+  renderer.fillRoundedRect(mx, my, mw, mh, 12, Color::White);
+  renderer.drawRoundedRect(mx, my, mw, mh, 3, 12, true);
+  renderer.drawText(UI_12_FONT_ID, mx + 20, my + 20, "Confirm deletion?");
+
+  const char* opts[] = {"Delete", "Cancel"};
+  for (int i = 0; i < 2; i++) {
+    int ry = my + 70 + i * 50;
+    if (menuSelectedIndex == i) {
+      renderer.fillRoundedRect(mx + 10, ry - 5, mw - 20, 42, 8, Color::Black);
+    }
+    renderer.drawText(UI_12_FONT_ID, mx + 20, ry + 4, opts[i], menuSelectedIndex != i);
+  }
 }
 
 size_t MyLibraryActivity::findEntry(const std::string& name) const {

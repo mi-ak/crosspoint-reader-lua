@@ -18,6 +18,19 @@
 
 namespace {
 constexpr unsigned long GO_HOME_MS = 1000;
+
+void maskCorners(const GfxRenderer& renderer, int x, int y, int w, int h, int r) {
+  for (int dy = 0; dy < r; dy++) {
+    for (int dx = 0; dx < r; dx++) {
+      if ((r - dx) * (r - dx) + (r - dy) * (r - dy) > r * r) {
+        renderer.drawPixel(x + dx, y + dy, false);                  // TL
+        renderer.drawPixel(x + w - 1 - dx, y + dy, false);          // TR
+        renderer.drawPixel(x + dx, y + h - 1 - dy, false);          // BL
+        renderer.drawPixel(x + w - 1 - dx, y + h - 1 - dy, false);  // BR
+      }
+    }
+  }
+}
 }  // namespace
 
 void RecentBooksActivity::loadRecentBooks() {
@@ -33,69 +46,92 @@ void RecentBooksActivity::loadRecentBooks() {
     if ((int)recentBooks.size() >= maxBooks) break;
     recentBooks.push_back(book);
   }
+  invalidateCache();
 }
 
-void RecentBooksActivity::loadRecentCovers(int coverHeight) {
+void RecentBooksActivity::loadPageCovers(int pageStart, int coverHeight) {
+  if (recentsLoading) return;
   recentsLoading = true;
+
+  const int pageEnd = std::min(pageStart + BOOKS_PER_PAGE, static_cast<int>(recentBooks.size()));
+  
+  // First, check if we even need to show a popup. 
+  // If all thumbnails on this page exist, we don't need to block.
+  bool needsGeneration = false;
+  for (int i = pageStart; i < pageEnd; ++i) {
+    if (recentBooks[i].coverBmpPath.empty()) continue;
+    std::string thumbPath = UITheme::getCoverThumbPath(recentBooks[i].coverBmpPath, coverHeight);
+    if (!Storage.exists(thumbPath.c_str())) {
+      needsGeneration = true;
+      break;
+    }
+  }
+
+  if (!needsGeneration) {
+    lastLoadedPageStart = pageStart;
+    recentsLoading = false;
+    return;
+  }
+
   bool showingLoading = false;
   Rect popupRect;
+  int processedCount = 0;
+  const int totalToProcess = pageEnd - pageStart;
 
-  int progress = 0;
-  for (RecentBook& book : recentBooks) {
-    if (!book.coverBmpPath.empty()) {
-      std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
-      if (!Storage.exists(coverPath.c_str())) {
+  for (int i = pageStart; i < pageEnd; ++i) {
+    RecentBook& book = recentBooks[i];
+    
+    // Always check if thumbnail exists, if not, try background generation
+    std::string coverPath = book.coverBmpPath.empty() ? "" : UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
+    if (coverPath.empty() || !Storage.exists(coverPath.c_str())) {
         if (StringUtils::checkFileExtension(book.path, ".epub")) {
-          // If epub, try to load the metadata for title/author and cover
           Epub epub(book.path, "/.crosspoint");
-          epub.load(false, true); // Skip loading css since we only need metadata here
-
-          if (!showingLoading) {
-            showingLoading = true;
-            popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+          // load(true, true) ensures metadata is re-indexed from ZIP if cache is missing
+          if (epub.load(true, true)) {
+            if (!showingLoading) {
+              showingLoading = true;
+              popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+            }
+            GUI.fillPopupProgress(renderer, popupRect, 10 + processedCount * (90 / totalToProcess));
+            
+            bool success = epub.generateThumbBmp(coverHeight);
+            if (!success && !Storage.exists(book.path.c_str())) {
+              RECENT_BOOKS.updateBook(book.path, book.title, book.author, "", book.fileSize);
+              book.coverBmpPath = "";
+            }
+            requestUpdate();
           }
-          GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
-          
-          bool success = epub.generateThumbBmp(coverHeight);
-          if (!success) {
-            RECENT_BOOKS.updateBook(book.path, book.title, book.author, "", book.fileSize);
-            book.coverBmpPath = "";
-          }
-          requestUpdate();
         } else if (StringUtils::checkFileExtension(book.path, ".xtch") ||
                    StringUtils::checkFileExtension(book.path, ".xtc")) {
-          // Handle XTC file
           Xtc xtc(book.path, "/.crosspoint");
           if (xtc.load()) {
             if (!showingLoading) {
               showingLoading = true;
               popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
             }
-            GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
+            GUI.fillPopupProgress(renderer, popupRect, 10 + processedCount * (90 / totalToProcess));
             bool success = xtc.generateThumbBmp(coverHeight);
-            if (!success) {
+            if (!success && !Storage.exists(book.path.c_str())) {
               RECENT_BOOKS.updateBook(book.path, book.title, book.author, "", book.fileSize);
               book.coverBmpPath = "";
             }
             requestUpdate();
           }
         }
-      }
     }
-    progress++;
+    processedCount++;
+    vTaskDelay(1); // Yield for each item on page
   }
 
-  recentsLoaded = true;
+  lastLoadedPageStart = pageStart;
   recentsLoading = false;
 }
 
 void RecentBooksActivity::onEnter() {
   Activity::onEnter();
-
-  // Load data
   loadRecentBooks();
-
   selectorIndex = 0;
+  invalidateCache();
   skipNextButtonCheck = true;
   requestUpdate();
 }
@@ -116,7 +152,7 @@ void RecentBooksActivity::deleteSelectedBook() {
     selectorIndex = static_cast<int>(recentBooks.size()) - 1;
   }
   menuState = MenuState::None;
-  recentsLoaded = false;
+  lastLoadedPageStart = -1;
   requestUpdate();
 }
 
@@ -251,6 +287,24 @@ void RecentBooksActivity::loop() {
   });
 }
 
+void RecentBooksActivity::updatePageCache(int pageStart, int count, int coverHeight) {
+  if (cachedPageStart == pageStart && (int)pageCache.size() == count) return;
+
+  pageCache.clear();
+  pageCache.reserve(count);
+  for (int i = 0; i < count; ++i) {
+    const int bookIdx = pageStart + i;
+    const auto& book = recentBooks[bookIdx];
+    ItemRenderCache item;
+    if (!book.coverBmpPath.empty()) {
+      item.thumbPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
+      item.hasThumb = Storage.exists(item.thumbPath.c_str());
+    }
+    pageCache.push_back(std::move(item));
+  }
+  cachedPageStart = pageStart;
+}
+
 void RecentBooksActivity::render(Activity::RenderLock&&) {
   renderer.clearScreen();
 
@@ -264,11 +318,12 @@ void RecentBooksActivity::render(Activity::RenderLock&&) {
   const int gridTopOffset = 20;
   
   // Calculate grid layout sizes
-  const int columns = 3;
-  const int coverWidth = (pageWidth - (metrics.contentSidePadding * 2) - (metrics.verticalSpacing * (columns - 1))) / columns;
-  // Preserve rough 3:4 aspect ratio for covers
-  const int coverHeight = (coverWidth * 4) / 3;
+  const int columns     = 3;
+  const int coverHeight = 180; // Unified height for thumbnails
+  const int coverWidth  = 123; // User requested fixed width
   const int rowSpacing  = metrics.verticalSpacing + 15;
+  const int totalGridWidth = (columns * coverWidth) + ((columns - 1) * metrics.verticalSpacing);
+  const int startXOffset   = (pageWidth - totalGridWidth) / 2;
 
   // Pagination
   const int totalBooks  = static_cast<int>(recentBooks.size());
@@ -281,51 +336,64 @@ void RecentBooksActivity::render(Activity::RenderLock&&) {
   if (recentBooks.empty()) {
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, contentTop + 20, tr(STR_NO_RECENT_BOOKS));
   } else {
+    updatePageCache(pageStart, pageCount, coverHeight);
+
     for (int i = 0; i < pageCount; ++i) {
+      const auto& cacheItem = pageCache[i];
       const int bookIdx = pageStart + i;
       const int col = i % columns;
       const int row = i / columns;
 
-      const int x = metrics.contentSidePadding + col * (coverWidth + metrics.verticalSpacing);
+      const int x = startXOffset + col * (coverWidth + metrics.verticalSpacing);
       const int y = contentTop + gridTopOffset + row * (coverHeight + rowSpacing);
 
-      Rect coverRect(x, y, coverWidth, coverHeight);
-
       // Draw cover image or fallback icon
-      if (!recentBooks[bookIdx].coverBmpPath.empty()) {
-        std::string coverPath = UITheme::getCoverThumbPath(recentBooks[bookIdx].coverBmpPath, coverHeight);
-        if (Storage.exists(coverPath.c_str())) {
-          FsFile file;
-          if (Storage.openFileForRead("HOME", coverPath, file)) {
-            Bitmap bmp(file);
-            if (bmp.parseHeaders() == BmpReaderError::Ok) {
-              renderer.setInvertEnabled(false);
-              renderer.drawBitmap(bmp, x + (coverWidth - bmp.getWidth()) / 2, y + (coverHeight - bmp.getHeight()) / 2,
-                                  bmp.getWidth(), bmp.getHeight());
-              renderer.setInvertEnabled(renderer.isDarkMode());
-            }
-            file.close();
+      bool drawn = false;
+      if (cacheItem.hasThumb) {
+        FsFile file;
+        if (Storage.openFileForRead("HOME", cacheItem.thumbPath, file)) {
+          Bitmap bmp(file);
+          if (bmp.parseHeaders() == BmpReaderError::Ok) {
+            renderer.drawBitmap(bmp, x + (coverWidth - bmp.getWidth()) / 2, y + (coverHeight - bmp.getHeight()) / 2,
+                                bmp.getWidth(), bmp.getHeight());
+            // Mask sharp corners of the bitmap so they don't leak outside the rounded border
+            maskCorners(renderer, x + (coverWidth - bmp.getWidth()) / 2, y + (coverHeight - bmp.getHeight()) / 2,
+                        bmp.getWidth(), bmp.getHeight(), 4);
+            renderer.drawRoundedRect(x, y, coverWidth, coverHeight, 1, 4, true);
+            drawn = true;
           }
-        } else {
-          renderer.drawIcon(BookIcon, x + (coverWidth - 32) / 2, y + (coverHeight - 32) / 2, 32, 32);
+          file.close();
         }
-      } else {
+      }
+
+      if (!drawn) {
+        renderer.drawRoundedRect(x, y, coverWidth, coverHeight, 1, 4, true);
+        renderer.fillRoundedRect(x + 1, y + 1, coverWidth - 2, coverHeight - 2, 4, Color::White);
         renderer.drawIcon(BookIcon, x + (coverWidth - 32) / 2, y + (coverHeight - 32) / 2, 32, 32);
       }
 
-      // Selection box
+      // Selection box — 2px rounded rect, same as CoverTheme
       if (bookIdx == selectorIndex) {
-        renderer.drawRect(coverRect.x - 4, coverRect.y - 4, coverRect.width + 8, coverRect.height + 8, true);
+        renderer.drawRoundedRect(x - 2, y - 2, coverWidth + 4, coverHeight + 4, 3, 5, true);
       }
     }
 
-    // Page indicator  e.g. "2 / 4"
+    // Page indicator (dots)
     if (totalPages > 1) {
-      char pageStr[12];
-      snprintf(pageStr, sizeof(pageStr), "%d / %d", currentPage + 1, totalPages);
-      const int tw = renderer.getTextWidth(SMALL_FONT_ID, pageStr);
-      const int ty = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - 16;
-      renderer.drawText(SMALL_FONT_ID, (pageWidth - tw) / 2, ty, pageStr);
+      const int dotSize = 8;
+      const int dotSpacing = 8;
+      const int totalDotWidth = (totalPages * dotSize) + ((totalPages - 1) * dotSpacing);
+      const int startX = (pageWidth - totalDotWidth) / 2;
+      const int dotY = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - 4;
+
+      for (int p = 0; p < totalPages; p++) {
+        int x = startX + p * (dotSize + dotSpacing);
+        if (p == currentPage) {
+          renderer.fillRect(x, dotY, dotSize, dotSize, true);
+        } else {
+          renderer.drawRect(x, dotY, dotSize, dotSize, true);
+        }
+      }
     }
   }
 
@@ -337,11 +405,7 @@ void RecentBooksActivity::render(Activity::RenderLock&&) {
 
   renderer.displayBuffer();
 
-  if (!firstRenderDone) {
-    firstRenderDone = true;
-    requestUpdate();
-  } else if (!recentsLoaded && !recentsLoading) {
-    recentsLoading = true;
-    loadRecentCovers(coverHeight);
+  if (lastLoadedPageStart != pageStart) {
+    loadPageCovers(pageStart, coverHeight);
   }
 }

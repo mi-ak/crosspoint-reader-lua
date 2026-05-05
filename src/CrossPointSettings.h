@@ -44,9 +44,7 @@ class CrossPointSettings {
 
   enum ORIENTATION {
     PORTRAIT = 0,       // 480x800 logical coordinates (current default)
-    LANDSCAPE_CW = 1,   // 800x480 logical coordinates, rotated 180° (swap top/bottom)
-    INVERTED = 2,       // 480x800 logical coordinates, inverted
-    LANDSCAPE_CCW = 3,  // 800x480 logical coordinates, native panel orientation
+    LANDSCAPE_CCW = 1,  // 800x480 logical coordinates, native panel orientation
     ORIENTATION_COUNT
   };
 
@@ -78,8 +76,12 @@ class CrossPointSettings {
   // Font family options
   enum FONT_FAMILY { BOOKERLY = 0, NOTOSANS = 1, FONT_FAMILY_COUNT };
   // Font size options
-  enum FONT_SIZE { SMALL = 0, MEDIUM = 1, LARGE = 2, EXTRA_LARGE = 3, FONT_SIZE_COUNT };
-  enum LINE_COMPRESSION { TIGHT = 0, NORMAL = 1, WIDE = 2, LINE_COMPRESSION_COUNT };
+  enum FONT_SIZE { SMALL = 0, MEDIUM = 1, LARGE = 2, FONT_SIZE_COUNT };
+  enum LINE_COMPRESSION {
+    NORMAL = 0,
+    WIDE = 1,
+    LINE_COMPRESSION_COUNT
+  };
   enum PARAGRAPH_ALIGNMENT {
     JUSTIFIED = 0,
     LEFT_ALIGN = 1,
@@ -116,7 +118,7 @@ class CrossPointSettings {
   enum HIDE_BATTERY_PERCENTAGE { HIDE_NEVER = 0, HIDE_READER = 1, HIDE_ALWAYS = 2, HIDE_BATTERY_PERCENTAGE_COUNT };
 
   // UI Theme
-  enum UI_THEME { CLASSIC = 0, LYRA = 1, LYRA_3_COVERS = 2, FLOW = 3 };
+  enum UI_THEME { CLASSIC = 0, FLOW = 1, COVER_THEME = 2, TIME_THEME = 3 };
 
   // Sleep screen settings
   uint8_t sleepScreen = DARK;
@@ -170,7 +172,7 @@ class CrossPointSettings {
   // Sunlight fading compensation
   uint8_t fadingFix = 0;
   // Use book's embedded CSS styles for EPUB rendering (1 = enabled, 0 = disabled)
-  uint8_t embeddedStyle = 1;
+  uint8_t embeddedStyle = 0;
   uint8_t darkMode = 0;
   std::string timeZone = "JST-9";
 

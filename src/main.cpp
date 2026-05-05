@@ -25,6 +25,7 @@
 #include "activities/home/HomeActivity.h"
 #include "activities/home/MyLibraryActivity.h"
 #include "activities/home/RecentBooksActivity.h"
+#include "LibraryStore.h"
 #include "activities/reader/ReaderActivity.h"
 #include "activities/settings/SettingsActivity.h"
 #include "activities/util/FullScreenMessageActivity.h"
@@ -66,12 +67,6 @@ EpdFont bookerly16ItalicFont(&bookerly_16_italic);
 EpdFont bookerly16BoldItalicFont(&bookerly_16_bolditalic);
 EpdFontFamily bookerly16FontFamily(&bookerly16RegularFont, &bookerly16BoldFont, &bookerly16ItalicFont,
                                    &bookerly16BoldItalicFont);
-EpdFont bookerly18RegularFont(&bookerly_18_regular);
-EpdFont bookerly18BoldFont(&bookerly_18_bold);
-EpdFont bookerly18ItalicFont(&bookerly_18_italic);
-EpdFont bookerly18BoldItalicFont(&bookerly_18_bolditalic);
-EpdFontFamily bookerly18FontFamily(&bookerly18RegularFont, &bookerly18BoldFont, &bookerly18ItalicFont,
-                                   &bookerly18BoldItalicFont);
 
 EpdFont notosans12RegularFont(&notosans_12_regular);
 EpdFont notosans12BoldFont(&notosans_12_bold);
@@ -91,14 +86,6 @@ EpdFont notosans16ItalicFont(&notosans_16_italic);
 EpdFont notosans16BoldItalicFont(&notosans_16_bolditalic);
 EpdFontFamily notosans16FontFamily(&notosans16RegularFont, &notosans16BoldFont, &notosans16ItalicFont,
                                    &notosans16BoldItalicFont);
-EpdFont notosans18RegularFont(&notosans_18_regular);
-EpdFont notosans18BoldFont(&notosans_18_bold);
-EpdFont notosans18ItalicFont(&notosans_18_italic);
-EpdFont notosans18BoldItalicFont(&notosans_18_bolditalic);
-EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, &notosans18ItalicFont,
-                                   &notosans18BoldItalicFont);
-
-
 #endif  // OMIT_FONTS
 
 EpdFont smallFont(&notosans_8_regular);
@@ -108,9 +95,11 @@ EpdFont ui10RegularFont(&ubuntu_10_regular);
 EpdFont ui10BoldFont(&ubuntu_10_bold);
 EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
 
-EpdFont ui12RegularFont(&ubuntu_12_regular);
-EpdFont ui12BoldFont(&ubuntu_12_bold);
-EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
+EpdFont ui12RegularFont(&notosans_12_regular);
+EpdFont ui12BoldFont(&notosans_12_bold);
+EpdFont ui12ItalicFont(&notosans_12_italic);
+EpdFont ui12BoldItalicFont(&notosans_12_bolditalic);
+EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont, &ui12ItalicFont, &ui12BoldItalicFont);
 
 // measurement of power button press duration calibration value
 unsigned long t1 = 0;
@@ -232,12 +221,9 @@ void setupDisplayAndFonts() {
 #ifndef OMIT_FONTS
   renderer.insertFont(BOOKERLY_12_FONT_ID, bookerly12FontFamily);
   renderer.insertFont(BOOKERLY_16_FONT_ID, bookerly16FontFamily);
-  renderer.insertFont(BOOKERLY_18_FONT_ID, bookerly18FontFamily);
   renderer.insertFont(NOTOSANS_12_FONT_ID, notosans12FontFamily);
   renderer.insertFont(NOTOSANS_14_FONT_ID, notosans14FontFamily);
   renderer.insertFont(NOTOSANS_16_FONT_ID, notosans16FontFamily);
-  renderer.insertFont(NOTOSANS_18_FONT_ID, notosans18FontFamily);
-
 #endif
   renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
@@ -272,7 +258,7 @@ void setup() {
   exitActivity();
   enterNewActivity(new BootActivity(renderer, mappedInputManager));
   APP_STATE.loadFromFile(); RECENT_BOOKS.loadFromFile(); READING_STATS.loadFromFile();
-
+  LIBRARY_STORE.loadFromFile();
   auto clearPluginResumeState = []() {
     if (APP_STATE.lastSleepFromPlugin || !APP_STATE.lastPluginName.empty()) {
       APP_STATE.lastSleepFromPlugin = false;
@@ -287,7 +273,8 @@ void setup() {
     onGoToLuaPlugin(pluginName);
   } else {
     clearPluginResumeState();
-    if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader || mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
+    LIBRARY_STORE.loadFromFile();
+  if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader || mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
       onGoHome();
     } else {
       std::string p = APP_STATE.openEpubPath; APP_STATE.openEpubPath = ""; APP_STATE.readerActivityLoadCount++; APP_STATE.saveToFile(); onGoToReader(p);

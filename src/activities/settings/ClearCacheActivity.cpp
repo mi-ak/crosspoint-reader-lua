@@ -8,6 +8,7 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "LibraryStore.h"
 
 void ClearCacheActivity::onEnter() {
   ActivityWithSubactivity::onEnter();

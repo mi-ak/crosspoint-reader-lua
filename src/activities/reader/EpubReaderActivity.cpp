@@ -17,6 +17,7 @@
 #include "fontIds.h"
 #include "ReadingStatsStore.h"
 #include "util/ScreenshotUtil.h"
+#include "activities/settings/FontSelectActivity.h"
 #include <algorithm>
 
 namespace {
@@ -42,12 +43,6 @@ void applyReaderOrientation(GfxRenderer& renderer, const uint8_t orientation) {
   switch (orientation) {
     case CrossPointSettings::ORIENTATION::PORTRAIT:
       renderer.setOrientation(GfxRenderer::Orientation::Portrait);
-      break;
-    case CrossPointSettings::ORIENTATION::LANDSCAPE_CW:
-      renderer.setOrientation(GfxRenderer::Orientation::LandscapeClockwise);
-      break;
-    case CrossPointSettings::ORIENTATION::INVERTED:
-      renderer.setOrientation(GfxRenderer::Orientation::PortraitInverted);
       break;
     case CrossPointSettings::ORIENTATION::LANDSCAPE_CCW:
       renderer.setOrientation(GfxRenderer::Orientation::LandscapeCounterClockwise);
@@ -120,6 +115,14 @@ void EpubReaderActivity::onExit() {
     uint32_t elapsedSeconds = (millis() - sessionStartMillis) / 1000;
     READING_STATS.addReadingTime(epub->getPath(), epub->getTitle(), elapsedSeconds);
     READING_STATS.saveToFile();
+
+    if (section && section->pageCount > 0) {
+      float chapterProgress = static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
+      float totalProgress = epub->calculateProgress(currentSpineIndex, chapterProgress);
+      uint8_t percent = static_cast<uint8_t>(totalProgress * 100.0f + 0.5f);
+      RECENT_BOOKS.updateBookProgress(epub->getPath(), percent);
+    }
+    
     sessionStartMillis = 0;
   }
 
@@ -213,7 +216,7 @@ void EpubReaderActivity::loop() {
       return;
     }
 
-    const int optionCount = 7; // Resume, TOC, Go to, Dark Mode, Orientation, Screenshot, Exit
+    const int optionCount = 8; // Resume, TOC, Go to, Dark Mode, Font Size, Ext Font, Orientation, Exit
     if (mappedInput.wasReleasedRaw(HalGPIO::BTN_UP)) {
       menuSelectedIndex = (menuSelectedIndex > 0) ? menuSelectedIndex - 1 : optionCount - 1;
       requestUpdate();
@@ -244,9 +247,21 @@ void EpubReaderActivity::loop() {
           SETTINGS.darkMode = !SETTINGS.darkMode;
           SETTINGS.saveToFile();
           break;
-        case 4: onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction::ROTATE_SCREEN); break;
-        case 5: onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction::SCREENSHOT); break;
-        case 6:
+        case 4: // Font Family
+          SETTINGS.fontFamily = (SETTINGS.fontFamily + 1) % CrossPointSettings::FONT_FAMILY_COUNT;
+          SETTINGS.saveToFile();
+          section.reset();
+          break;
+        case 5: // External Font
+          enterNewActivity(new FontSelectActivity(renderer, mappedInput, FontSelectActivity::SelectMode::Reader, [this] {
+            section.reset();
+            exitActivity();
+            requestUpdate();
+          }));
+          inMenu = false;
+          return;
+        case 6: onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction::ROTATE_SCREEN); break;
+        case 7:
           mappedInput.consumeButtonRaw(HalGPIO::BTN_CONFIRM);
           onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction::GO_HOME);
           return;
@@ -537,7 +552,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       break;
     }
     case EpubReaderMenuActivity::MenuAction::ROTATE_SCREEN: {
-      uint8_t nextOrientation = (SETTINGS.orientation + 1) % 4;
+      uint8_t nextOrientation = (SETTINGS.orientation + 1) % CrossPointSettings::ORIENTATION_COUNT;
       applyOrientation(nextOrientation);
       break;
     }
@@ -666,8 +681,13 @@ void EpubReaderActivity::render(Activity::RenderLock&& lock) {
   renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
                                    &orientedMarginLeft);
   orientedMarginTop += SETTINGS.screenMargin + 30;
-  orientedMarginLeft += SETTINGS.screenMargin + 16;
-  orientedMarginRight += SETTINGS.screenMargin + 16;
+  if (SETTINGS.orientation == CrossPointSettings::LANDSCAPE_CCW) {
+    orientedMarginLeft += SETTINGS.screenMargin + 48;
+    orientedMarginRight += SETTINGS.screenMargin + 48;
+  } else {
+    orientedMarginLeft += SETTINGS.screenMargin + 16;
+    orientedMarginRight += SETTINGS.screenMargin + 16;
+  }
   orientedMarginBottom += SETTINGS.screenMargin + 40;
 
   const auto& metrics = UITheme::getInstance().getMetrics();
@@ -687,14 +707,14 @@ void EpubReaderActivity::render(Activity::RenderLock&& lock) {
 
     if (!section->loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                   SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
-                                  viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle)) {
+                                  viewportHeight, SETTINGS.hyphenationEnabled, false)) {
       LOG_DBG("ERS", "Cache not found, building...");
 
       const auto popupFn = [this]() { GUI.drawPopup(renderer, tr(STR_INDEXING)); };
 
       if (!section->createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                       SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
-                                      viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle, popupFn)) {
+                                      viewportHeight, SETTINGS.hyphenationEnabled, false, popupFn)) {
         LOG_ERR("ERS", "Failed to persist page data to SD");
         section.reset();
         return;
@@ -810,7 +830,7 @@ void EpubReaderActivity::renderMenu() const {
   }
 
   const int mw = 320;
-  const int mh = 380;
+  const int mh = 430;
   const int mx = (sw - mw) / 2;
   const int my = (sh - mh) / 2;
 
@@ -819,9 +839,11 @@ void EpubReaderActivity::renderMenu() const {
   renderer.drawRoundedRect(mx, my, mw, mh, 2, 10, textColor);
 
   const char* options[] = {tr(STR_RESUME), tr(STR_TOC), tr(STR_GO_TO),
-                           darkMode ? tr(STR_DAY_MODE) : tr(STR_DARK_MODE), tr(STR_ORIENTATION), tr(STR_SCREENSHOT_BUTTON), tr(STR_EXIT)};
+                           darkMode ? tr(STR_DAY_MODE) : tr(STR_DARK_MODE), 
+                           tr(STR_FONT_FAMILY), tr(STR_EXTERNAL_FONT),
+                           tr(STR_ORIENTATION), tr(STR_EXIT)};
 
-  for (int i = 0; i < 7; i++) {
+  for (int i = 0; i < 8; i++) {
     int ry = my + 15 + (i * 50);
     if (menuSelectedIndex == i) {
       renderer.fillRoundedRect(mx + 10, ry - 5, mw - 20, 40, 8, textColor ? Color::Black : Color::White);
@@ -973,13 +995,32 @@ void EpubReaderActivity::renderStatusBar(const int orientedMarginRight, const in
 void EpubReaderActivity::renderBookmarkIndicator() const {
   if (section && isPageBookmarked(currentSpineIndex, section->currentPage)) {
     const int sw = renderer.getScreenWidth();
-    const int rw = 20;
-    const int rh = 40;
-    const int rx = sw - rw - 30;
-    const int ry = 0;
+    const int w = 60; // Width along top edge
+    const int h = 30; // Height along right edge
+    const int h2w2 = h*h + w*w;
+    const int sw_edge = sw - 1; // Ensure rightmost pixels are drawn
     
-    // Draw ribbon (inverted when in dark mode to stay visible)
-    renderer.fillRect(rx, ry, rw, rh, !SETTINGS.darkMode);
+    // Correct physical reflection of (sw_edge, 0) across the fold line from (sw_edge-w, 0) to (sw_edge, h)
+    const int tx = sw_edge - (2 * h * h * w) / h2w2;
+    const int ty = (2 * w * w * h) / h2w2;
+
+    // 1. Draw the black background "hole" where the paper was folded from
+    int hx[3] = {sw_edge - w, sw_edge, sw_edge};
+    int hy[3] = {0, 0, h};
+    renderer.fillPolygon(hx, hy, 3, true);
+
+    // 2. Draw the folded flap (mirrored triangle from the corner)
+    int fx[3] = {sw_edge - w, sw_edge, tx};
+    int fy[3] = {0, h, ty};
+    renderer.fillPolygon(fx, fy, 3, false); // Fill with white
+    renderer.drawLine(sw_edge - w, 0, tx, ty, true); // Edge 1 (fold tip back to top)
+    renderer.drawLine(sw_edge, h, tx, ty, true);     // Edge 2 (fold tip back to right side)
+    
+    // 3. Draw a sharp acute shadow triangle at the bottom-right of the fold area (on the page)
+    // Enlarged for better visibility on 1-bit E-ink
+    int sx[3] = {sw_edge, sw_edge - 19, sw_edge - 13};
+    int sy[3] = {h, h + 14, h + 19};
+    renderer.fillPolygon(sx, sy, 3, true);
   }
 }
 

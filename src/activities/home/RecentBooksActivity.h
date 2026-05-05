@@ -24,19 +24,28 @@ class RecentBooksActivity final : public Activity {
 
   bool skipNextButtonCheck = false;
   bool recentsLoading = false;
-  bool recentsLoaded = false;
-  bool firstRenderDone = false;
+  int lastLoadedPageStart = -1;
 
   MenuState menuState = MenuState::None;
   int menuSelectedIndex = 0;  // 0=Delete, 1=Cancel / 0=Yes, 1=No
 
   // Data loading
   void loadRecentBooks();
-  void loadRecentCovers(int coverHeight);
+  void loadPageCovers(int pageStart, int coverHeight);
 
   void deleteSelectedBook();
   void renderDeleteMenu() const;
   void renderConfirmDialog() const;
+
+  // Render Caching (v3.4.3)
+  struct ItemRenderCache {
+    std::string thumbPath;
+    bool hasThumb = false;
+  };
+  std::vector<ItemRenderCache> pageCache;
+  int cachedPageStart = -1;
+  void invalidateCache() { cachedPageStart = -1; }
+  void updatePageCache(int pageStart, int count, int coverHeight);
 
  public:
   explicit RecentBooksActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,

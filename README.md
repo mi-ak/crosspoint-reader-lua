@@ -12,44 +12,53 @@ Built using **PlatformIO** and targeting the **ESP32-C3** microcontroller.
 
 Experience a premium, classic interface inspired by the iPod. The **Flow Theme** features smooth animations and a refined layout designed for the X4's e-ink screen.
 
-### 2. Full CJK Support & Proper Rendering
+### 2. Kindle-Style Grid View
+
+Experience a fast and clear book selection with our **Kindle-mode thumbnail browsing**. 
+- **Folders**: Kindle-inspired 3D design with gray-sectioned backgrounds and top "stacked book" lines.
+- **File Count Badge**: Real-time identification of file counts inside collections before you enter.
+*Recommendation: Organize your library into subdirectories within the `/books/` folder on your SD card for smooth browsing.*
+
+### 3. "Cover Theme" (Unified Reading Home)
+
+A traditional e-reader home screen that highlights your **Last Read** book and the **3 most recent books** at a glance.
+- **Premium Aesthetics**: Integrated **Real-time Corner Masking** ensures all thumbnails have smooth 4px rounded corners, eliminate rectangular artifacts on dark covers.
+- **Customizable**: Toggle between the iPod-style "Flow Theme" and the "Cover Theme" anytime in Settings.
+
+### 4. Full CJK Support & Proper Rendering
 
 Unlock high-quality reading for Traditional Chinese and other CJK languages. The system correctly displays **Chinese filenames** and ensures **Chinese EPUB rendering** when external fonts are provided.
 
-### 3. Advanced Recent Page
-
-Stay organized with a beautiful "Recent" view. Browse up to **18 of your most recently read books** (optimized for memory) with full cover art support for quick access.
-
-### 4. Heavyweight XTC Support
+### 5. Heavyweight XTC Support
 
 Read massive volumes without compromise. Our optimized **XTC binary format** supports files over **200MB** and **2000+ pages**, ensuring stability on constrained hardware.
 
-### 5. Contextual Menu & Dark Mode
+### 6. Contextual Menu & Dark Mode
 
 Access tools without leaving the page. Both XTC and EPUB formats support a **floating inner-page menu** and a dedicated **Dark Mode** for comfortable night reading.
 
-### 6. Dynamic Lua Plugin System
+### 7. Dynamic Lua Plugin System
 
 XTEINK X4 is a platform, not just a reader. The integrated **Lua scripting engine** allows for dynamic plugins that can extend core logic and create entirely new interfaces.
 
-### 7. MiniGo (Lua Plugin)
+### 8. MiniGo (Lua Plugin)
 
 A full-featured **9x9 Go game** powered by a professional **MCTS (Monte Carlo Tree Search)** engine. Challenge the AI directly on your reader.
 
-### 8. Qubic (Lua Plugin)
+### 9. Qubic (Lua Plugin)
 
 Enjoy the classic **3D Tic-Tac-Toe** logic game, reimagined for the e-ink experience.
 
-### 9. Flashcard (Lua Plugin)
+### 10. Flashcard (Lua Plugin)
 
 Turn your reading materials into learning opportunities with an integrated **SRS (Spaced Repetition System)** Flashcard application.
 
-### 10. System Intelligence
+### 11. System Intelligence
 
 - **Reading Time Tracking**: The system automatically logs and calculates your reading duration for every book.
 - **Smart Maintenance**: Automatic handling of reading records, metadata, and cache files to keep the system lean and responsive.
 
-### 11. Core Performance
+### 12. Core Performance
 
 - **Memory Breakthrough**: 50% reduction in page table memory usage.
 - **Instant Start**: Optimized refresh logic for near-instant book opening.
@@ -113,6 +122,22 @@ See the [EPUB to XTC Conversion Guide](../README.md#epub-轉檔-xtc-指南) in t
 
 ---
 
+## 🛠️ Companion Tools
+
+This project includes specialized tools to optimize content for the XTEINK X4:
+
+### 1. CJK Font Converter
+Located in `tools/crosspoint-reader-lua/CJK-font-converter`.
+- **Function**: Converts TTF/OTF fonts into high-performance 1-bit or 2-bit `.bin` formats.
+- **Support**: Specifically optimized for vertical reading and different anti-aliasing levels.
+
+### 2. EPUB to XTC Converter
+Located in `tools/crosspoint-reader-lua/epub-to-xtc-converter`.
+- **Function**: A full-featured CLI tool for converting standard EPUB files into the device-friendly XTC format.
+- **Features**: Supports image dithering, layout optimization, and multi-language settings (Vertical, Horizontal, etc.).
+
+---
+
 ## 💾 Installation & Development
 
 ### Web Flash
@@ -139,8 +164,32 @@ Huge thanks to:
 
 ---
 
-## 🕒 Update History
+- **2026-03-29 (v2.6.0-Lee)**:
+  - **子目錄圖示 (Grid View)**:
+    - 重製子目錄圖示為 **Kindle 風格**：頂部 3px 灰階橫線、左部書籍圖示、下半部灰色背景。
+    - 新增 **檔案計數標籤 (Badge)**，位於圖示左下角，展現藏書量。
+  - **封面圓角遮罩 (Cover Theme)**:
+    - 在 `MyLibrary` 與 `RecentBooks` 實現 `maskCorners` 演算法，完美解決深色封面露出直角問題。
+  - **字體工具 (Font Converter)**:
+    - `convert_font.py` 正式支援 **4x 超採樣渲染 (Upscale)**，大幅提升 e-ink 字體邊緣平滑度。
+    - 通過 `TaipeiSansTC` 32級字體測試，結果極佳。
 
+- **2026-03-27 (v2.5.0-Lee)**:
+  - 更新系統版本號為 `v2.5.0-Lee`。
+  - **EpubReader 浮動選單優化**：
+    - 移除「螢幕截圖」功能。
+    - 新增「閱讀字體」切換（Bookerly / Noto Sans）。
+    - 新增「外部字體」選擇（支援跨目錄字體選取）。
+    - 更改字體後自動觸發重新排版（Indexing）與緩存更新。
+    - 優化選單佈局，調整高度以適應新項目。
+  - **UI/UX 增強**：
+    - 全球性地將所有清單頁面（如書庫、閱讀統計）的右側滾動條替換為更優雅的 **點狀分頁指示器**（8x8 px 方塊）。
+    - 統一 XTC 與 EPUB 閱讀器的書籤樣式，將 EPUB 原本的黑塊升級為精緻的 **黑色緞帶圖示**。
+    - 為 XTC 與 EPUB 章節選擇頁面新增標準按鈕導航提示，提升一致性。
+  - **轉檔工具優化**：
+    - 重構 `convert_x4.sh`，支援從任何工作目錄啟動，並具備智慧型路徑解析。
+  - **專案瘦身**：
+    - 移除冗餘的大型字體檔案與編譯輸出，大幅優化 GitHub 儲存庫體積。
 - **2026-03-13**:
   - `Recents` page optimization: Reduced maximum books from 36 to 18 to save memory.
   - `Flow Theme` optimization: Reduced carousel book count from 10 to 7 to improve stability.

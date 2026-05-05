@@ -14,12 +14,14 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "LibraryStore.h"
 #include "MappedInputManager.h"
 #include "PathRepairManager.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/StringUtils.h"
+#include "util/TimeService.h"
 
 int HomeActivity::getMenuItemCount() const {
   int count = 4;  // My Library, Recents, Plugins, Settings
@@ -55,64 +57,57 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
   bool showingLoading = false;
   Rect popupRect;
 
+  // Ensure cache directories exist before trying to write thumbnails.
+  // After ClearCacheActivity runs, directories may have been deleted.
+  LIBRARY_STORE.ensureCacheDirectories();
+
   int progress = 0;
   for (RecentBook& book : recentBooks) {
     if (abortLoading) break;
-    if (!book.coverBmpPath.empty()) {
-      std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
-      if (!Storage.exists(coverPath.c_str())) {
-        // If epub, try to load the metadata for title/author and cover
-        if (StringUtils::checkFileExtension(book.path, ".epub")) {
-          Epub epub(book.path, "/.crosspoint");
-          // Skip loading css since we only need metadata here
-          epub.load(false, true);
 
-          // Try to generate thumbnail image for Continue Reading card
+    std::string coverPath = book.coverBmpPath.empty() ? "" : UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
+    bool needGeneration = coverPath.empty() || !Storage.exists(coverPath.c_str());
+
+    if (needGeneration) {
+      if (StringUtils::checkFileExtension(book.path, ".epub")) {
+        Epub epub(book.path, "/.crosspoint");
+        if (epub.load(true, true)) {
           if (!showingLoading) {
             showingLoading = true;
             popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
           }
           GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
-          bool success = epub.generateThumbBmp(coverHeight);
-          if (!success) {
-            // Only clear coverBmpPath if the book file itself is gone.
-            // For transient failures (memory, read error) keep the path
-            // so generation can succeed on the next fresh launch.
-            if (!Storage.exists(book.path.c_str())) {
-              RECENT_BOOKS.updateBook(book.path, book.title, book.author, "", book.fileSize);
-              book.coverBmpPath = "";
-            }
+          bool ok = epub.generateThumbBmp(coverHeight);
+          if (!ok && !Storage.exists(book.path.c_str())) {
+            RECENT_BOOKS.updateBook(book.path, book.title, book.author, "", book.fileSize);
+            book.coverBmpPath = "";
           }
           coverRendered = false;
+          coverBufferStored = false;  // Discard stale buffer so next render draws fresh
           requestUpdate();
-        } else if (StringUtils::checkFileExtension(book.path, ".xtch") ||
-                   StringUtils::checkFileExtension(book.path, ".xtc")) {
-          // Handle XTC file
-          Xtc xtc(book.path, "/.crosspoint");
-          if (xtc.load()) {
-            // Try to generate thumbnail image for Continue Reading card
-            if (!showingLoading) {
-              showingLoading = true;
-              popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
-            }
-            GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
-            bool success = xtc.generateThumbBmp(coverHeight);
-            if (!success) {
-              // Only clear coverBmpPath if the book file itself is gone.
-              // Large XTC files may fail due to heap fragmentation after
-              // reading — keep the path so generation retries on next launch.
-              if (!Storage.exists(book.path.c_str())) {
-                RECENT_BOOKS.updateBook(book.path, book.title, book.author, "", book.fileSize);
-                book.coverBmpPath = "";
-              }
-            }
-            coverRendered = false;
-            requestUpdate();
+        }
+      } else if (StringUtils::checkFileExtension(book.path, ".xtch") ||
+                 StringUtils::checkFileExtension(book.path, ".xtc")) {
+        Xtc xtc(book.path, "/.crosspoint");
+        if (xtc.load()) {
+          if (!showingLoading) {
+            showingLoading = true;
+            popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
           }
+          GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
+          bool ok = xtc.generateThumbBmp(coverHeight);
+          if (!ok && !Storage.exists(book.path.c_str())) {
+            RECENT_BOOKS.updateBook(book.path, book.title, book.author, "", book.fileSize);
+            book.coverBmpPath = "";
+          }
+          coverRendered = false;
+          coverBufferStored = false;  // Discard stale buffer so next render draws fresh
+          requestUpdate();
         }
       }
     }
     progress++;
+    vTaskDelay(1);
   }
 
   recentsLoaded = true;
@@ -128,7 +123,8 @@ void HomeActivity::onEnter() {
   firstRenderDone = false;
   recentsLoaded   = false;
   recentsLoading  = false;
-  abortLoading    = false;
+  coverRendered = false;
+  coverBufferStored = false;
 
   const auto& metrics = UITheme::getInstance().getMetrics();
   loadRecentBooks(metrics.homeRecentBooksCount);
@@ -189,7 +185,43 @@ void HomeActivity::freeCoverBuffer() {
   coverBufferStored = false;
 }
 
+void HomeActivity::resetForThemeChange() {
+  freeCoverBuffer();
+  coverRendered = false;
+  coverBufferStored = false;
+  recentsLoaded = false;
+  recentsLoading = false;
+  firstRenderDone = false;
+  bookSelectorIndex = 0;
+  menuSelectorIndex = 0;
+  focusZone = Zone::BOOKS;
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  loadRecentBooks(metrics.homeRecentBooksCount);
+
+  // 標記下一次 render 使用 HALF_REFRESH 消除殘影
+  pendingHalfRefresh = true;
+
+  skipNextButtonCheck = true;
+  requestUpdate();
+}
 void HomeActivity::loop() {
+  if (themeSwitcher.isVisible()) {
+      if (themeSwitcher.handleInput(mappedInput)) {
+          // Theme changed — reset in-place
+          resetForThemeChange();
+      } else if (!themeSwitcher.isVisible()) {
+          // Switcher was just hidden (cancelled or same theme confirmed)
+          // Redraw and skip one input check to prevent the same button from triggering activities
+          skipNextButtonCheck = true;
+          requestUpdate();
+      } else {
+          // Theme selection changed but still visible — redraw
+          requestUpdate();
+      }
+      return;
+  }
+
   if (skipNextButtonCheck) {
     if (!mappedInput.isAnyPressed() && !mappedInput.wasAnyReleased()) {
       skipNextButtonCheck = false;
@@ -197,119 +229,70 @@ void HomeActivity::loop() {
     return;
   }
 
-  const int bookCount = recentBooks.size();
+  const int bookCount = static_cast<int>(recentBooks.size());
   const int menuCount = 4;
 
-  auto getNextBookIdx = [](int cur, int total) {
-    if (total <= 1) return 0;
-    return (cur + 1) % total;
-  };
-  
-  auto getPrevBookIdx = [](int cur, int total) {
-    if (total <= 1) return 0;
-    return (cur + total - 1) % total;
-  };
+  // Power button short press = Confirm (when configured as PAGE_TURN)
+  const bool powerConfirm = (SETTINGS.shortPwrBtn == CrossPointSettings::PAGE_TURN) &&
+                             mappedInput.wasShortPressedRaw(HalGPIO::BTN_POWER, SETTINGS.getPowerButtonDuration());
 
-  // Per user request:
-  // [ 2 1 3 ] -> Right -> [ 1 3 4 ]
-  // [ B2 B1 B3 ] -> Left -> [ B4 B2 B1 ]
-
-  // Side buttons (usually physical 4 and 5) - Strictly for book covers
+  // Side Buttons (Physical 4 & 5 / BTN_UP & BTN_DOWN) - Strictly for Book Selection
   if (mappedInput.wasPressedRaw(HalGPIO::BTN_UP) || mappedInput.wasPressedRaw(4)) {
     if (bookCount > 0) {
       focusZone = Zone::BOOKS;
-      bookSelectorIndex = getNextBookIdx(bookSelectorIndex, bookCount);
-      coverBufferStored = false;
-      coverRendered = false;  // Force full re-render from SD for new selection
+      bookSelectorIndex = (bookSelectorIndex + 1) % bookCount;
       requestUpdate();
     }
   }
   if (mappedInput.wasPressedRaw(HalGPIO::BTN_DOWN) || mappedInput.wasPressedRaw(5)) {
     if (bookCount > 0) {
       focusZone = Zone::BOOKS;
-      bookSelectorIndex = getPrevBookIdx(bookSelectorIndex, bookCount);
-      coverBufferStored = false;
-      coverRendered = false;  // Force full re-render from SD for new selection
+      bookSelectorIndex = (bookSelectorIndex + bookCount - 1) % bookCount;
       requestUpdate();
     }
   }
 
-  // Power button short press = Confirm (when configured as PAGE_TURN)
-  const bool powerConfirm = (SETTINGS.shortPwrBtn == CrossPointSettings::PAGE_TURN) &&
-                             mappedInput.wasShortPressedRaw(HalGPIO::BTN_POWER, SETTINGS.getPowerButtonDuration());
+  // Use logical buttons for Menu/Confirm/Back to respect user remapping settings
+  if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+    if (focusZone == Zone::BOOKS) {
+      focusZone = Zone::MENU;
+      menuSelectorIndex = 3; // Start at Settings
+    } else {
+      menuSelectorIndex = (menuSelectorIndex + menuCount - 1) % menuCount;
+    }
+    requestUpdate();
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
+    if (focusZone == Zone::BOOKS) {
+      focusZone = Zone::MENU;
+      menuSelectorIndex = 0; // Start at Library
+    } else {
+      menuSelectorIndex = (menuSelectorIndex + 1) % menuCount;
+    }
+    requestUpdate();
+  }
 
-  // Front buttons (Logical 1-to-1 mapping)
-
-  // Button 2 (Confirm) - Selection
+  // Confirm Button - Strictly triggers the focused action
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) || powerConfirm) {
-    int idx = 0;
-    const int myLibraryIdx = idx++;
-    const int recentsIdx = idx++;
-    const int pluginsIdx = idx++;
-    const int settingsIdx = idx++;
-
     if (focusZone == Zone::BOOKS && !recentBooks.empty()) {
-      freeCoverBuffer(); // Proactively free memory before transition
+      freeCoverBuffer();
       onSelectBook(recentBooks[bookSelectorIndex].path);
     } else if (focusZone == Zone::MENU) {
-      if (menuSelectorIndex == myLibraryIdx) {
-        freeCoverBuffer();
-        onMyLibraryOpen();
-      } else if (menuSelectorIndex == recentsIdx) {
-        freeCoverBuffer();
-        onRecentsOpen();
-      } else if (menuSelectorIndex == pluginsIdx) {
-        freeCoverBuffer();
-        onPluginsOpen();
-      } else if (menuSelectorIndex == settingsIdx) {
-        freeCoverBuffer();
-        onSettingsOpen();
-      }
+      freeCoverBuffer();
+      if (menuSelectorIndex == 0) onMyLibraryOpen();
+      else if (menuSelectorIndex == 1) onRecentsOpen();
+      else if (menuSelectorIndex == 2) onPluginsOpen();
+      else if (menuSelectorIndex == 3) onSettingsOpen();
     }
     return;
   }
 
-  // Button 3 (Up) - Vertical movement
-  if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
-    if (focusZone == Zone::MENU) {
-      if (menuSelectorIndex > 0) {
-        menuSelectorIndex--;
-      } else {
-        // Move focus up to books zone
-        focusZone = Zone::BOOKS;
-      }
-      requestUpdate();
-    } else if (focusZone == Zone::BOOKS) {
-      // Loop to bottom of menu
-      focusZone = Zone::MENU;
-      menuSelectorIndex = menuCount - 1;
-      requestUpdate();
-    }
-  }
-
-  // Button 4 (Down) - Vertical movement
-  if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
-    if (focusZone == Zone::BOOKS) {
-      // Move focus down to menu zone
-      focusZone = Zone::MENU;
-      menuSelectorIndex = 0;
-      requestUpdate();
-    } else if (focusZone == Zone::MENU) {
-      if (menuSelectorIndex < menuCount - 1) {
-        menuSelectorIndex++;
-        requestUpdate();
-      } else {
-        // Loop back to books
-        focusZone = Zone::BOOKS;
-        requestUpdate();
-      }
-    }
-  }
-
-  // Button 1 (Back) - Default Home behavior
+  // Back Button - Strictly Toggles Theme Switcher Overlay
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    // On home, Back usually doesn't do much unless it exits popups.
-    // For now, no-op or specific home action.
+    themeSwitcher.show();
+    skipNextButtonCheck = true;
+    requestUpdate();
+    return;
   }
 }
 
@@ -321,15 +304,13 @@ void HomeActivity::render(Activity::RenderLock&&) {
   renderer.clearScreen();
   bool bufferRestored = coverBufferStored && restoreCoverBuffer();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding}, nullptr);
-
-  // Calculate a compatible selectorIndex for legacy themes
-  // For FlowTheme, we pass (1000 + bookSelectorIndex) when focus is on menu to retain state
-  int compatibleSelectorIndex = -1;
-  if (focusZone == Zone::BOOKS) {
-    compatibleSelectorIndex = bookSelectorIndex;
+  // Calculate compatible index for drawing (FlowTheme, etc.)
+  // Hide focus if ThemeSwitcher is visible
+  int compatibleSelectorIndex;
+  if (themeSwitcher.isVisible()) {
+      compatibleSelectorIndex = -1;
   } else {
-    compatibleSelectorIndex = 1000 + bookSelectorIndex;
+      compatibleSelectorIndex = (focusZone == Zone::BOOKS) ? bookSelectorIndex : (1000 + bookSelectorIndex);
   }
 
   const auto labels = mappedInput.mapLabels(BaseTheme::HINT_BACK, BaseTheme::HINT_OK, BaseTheme::HINT_PREV, BaseTheme::HINT_NEXT);
@@ -342,23 +323,31 @@ void HomeActivity::render(Activity::RenderLock&&) {
                                         tr(STR_PLUGINS), tr(STR_SETTINGS_TITLE)};
   std::vector<UIIcon> menuIcons = {Folder, Recent, Game, Settings};
 
-  // Add 50px extra spacing below books (+50) for better visual separation
+  // Add extra spacing below books
   int menuY = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.verticalSpacing + 30;
   GUI.drawButtonMenu(
       renderer,
       Rect{0, menuY, pageWidth,
            pageHeight - menuY - metrics.verticalSpacing},
-      static_cast<int>(menuItems.size()), focusZone == Zone::MENU ? menuSelectorIndex : -1,
+      static_cast<int>(menuItems.size()), (focusZone == Zone::MENU && !themeSwitcher.isVisible()) ? menuSelectorIndex : -1,
       [&menuItems](int index) { return std::string(menuItems[index]); },
       [&menuIcons](int index) { return menuIcons[index]; });
 
-  renderer.displayBuffer();
+  // Draw Theme Switcher Overlay on top
+  themeSwitcher.render(renderer);
+
+  if (pendingHalfRefresh) {
+    pendingHalfRefresh = false;
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  } else {
+    renderer.displayBuffer();
+  }
 
   if (!firstRenderDone) {
     firstRenderDone = true;
     requestUpdate();
   } else if (!recentsLoaded && !recentsLoading) {
     recentsLoading = true;
-    loadRecentCovers(metrics.homeCoverHeight); // 294 or 314 for Flow
+    loadRecentCovers(metrics.homeCoverHeight);
   }
 }

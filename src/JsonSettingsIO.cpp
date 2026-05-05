@@ -12,6 +12,7 @@
 #include "ReadingStatsStore.h"
 #include "RecentBooksStore.h"
 #include "WifiCredentialStore.h"
+#include "LibraryStore.h"
 
 // ---- CrossPointState ----
 
@@ -52,7 +53,6 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   JsonDocument doc;
 
   doc["sleepScreen"] = s.sleepScreen;
-  doc["sleepScreenCoverMode"] = s.sleepScreenCoverMode;
   doc["sleepScreenCoverFilter"] = s.sleepScreenCoverFilter;
   doc["statusBar"] = s.statusBar;
   doc["extraParagraphSpacing"] = s.extraParagraphSpacing;
@@ -82,6 +82,7 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   doc["darkMode"] = s.darkMode;
   doc["language"] = s.language;
   doc["timeZone"] = s.timeZone;
+  doc["v"] = (uint8_t)2; // Settings version for migration
 
   String json;
   serializeJson(doc, json);
@@ -101,15 +102,20 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   auto clamp = [](uint8_t val, uint8_t maxVal, uint8_t def) -> uint8_t { return val < maxVal ? val : def; };
 
   s.sleepScreen = clamp(doc["sleepScreen"] | (uint8_t)S::DARK, S::SLEEP_SCREEN_MODE_COUNT, S::DARK);
-  s.sleepScreenCoverMode =
-      clamp(doc["sleepScreenCoverMode"] | (uint8_t)S::FIT, S::SLEEP_SCREEN_COVER_MODE_COUNT, S::FIT);
+  s.sleepScreenCoverMode = (uint8_t)S::FIT;
   s.sleepScreenCoverFilter =
       clamp(doc["sleepScreenCoverFilter"] | (uint8_t)S::NO_FILTER, S::SLEEP_SCREEN_COVER_FILTER_COUNT, S::NO_FILTER);
   s.statusBar = clamp(doc["statusBar"] | (uint8_t)S::SIMPLE, S::STATUS_BAR_MODE_COUNT, S::SIMPLE);
   s.extraParagraphSpacing = doc["extraParagraphSpacing"] | (uint8_t)1;
   s.textAntiAliasing = doc["textAntiAliasing"] | (uint8_t)1;
   s.shortPwrBtn = clamp(doc["shortPwrBtn"] | (uint8_t)S::IGNORE, S::SHORT_PWRBTN_COUNT, S::IGNORE);
-  s.orientation = clamp(doc["orientation"] | (uint8_t)S::PORTRAIT, S::ORIENTATION_COUNT, S::PORTRAIT);
+  uint8_t rawOrientation = doc["orientation"] | (uint8_t)S::PORTRAIT;
+  if (rawOrientation == 3) {
+    rawOrientation = S::LANDSCAPE_CCW;
+  } else if (rawOrientation == 1 || rawOrientation == 2) {
+    rawOrientation = S::PORTRAIT;
+  }
+  s.orientation = clamp(rawOrientation, S::ORIENTATION_COUNT, S::PORTRAIT);
   s.sideButtonLayout =
       clamp(doc["sideButtonLayout"] | (uint8_t)S::PREV_NEXT, S::SIDE_BUTTON_LAYOUT_COUNT, S::PREV_NEXT);
   s.frontButtonBack =
@@ -122,8 +128,25 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
       clamp(doc["frontButtonRight"] | (uint8_t)S::FRONT_HW_RIGHT, S::FRONT_BUTTON_HARDWARE_COUNT, S::FRONT_HW_RIGHT);
   CrossPointSettings::validateFrontButtonMapping(s);
   s.fontFamily = clamp(doc["fontFamily"] | (uint8_t)S::BOOKERLY, S::FONT_FAMILY_COUNT, S::BOOKERLY);
-  s.fontSize = clamp(doc["fontSize"] | (uint8_t)S::MEDIUM, S::FONT_SIZE_COUNT, S::MEDIUM);
-  s.lineSpacing = clamp(doc["lineSpacing"] | (uint8_t)S::NORMAL, S::LINE_COMPRESSION_COUNT, S::NORMAL);
+  uint8_t rawFontSize = doc["fontSize"] | (uint8_t)S::MEDIUM;
+  if (rawFontSize == 3) {
+    rawFontSize = S::LARGE;
+  }
+  s.fontSize = clamp(rawFontSize, S::FONT_SIZE_COUNT, S::MEDIUM);
+  
+  uint8_t version = doc["v"] | (uint8_t)1;
+  uint8_t rawLineSpacing = doc["lineSpacing"] | (uint8_t)S::NORMAL;
+  if (version < 2) {
+    if (rawLineSpacing == 2) {
+      s.lineSpacing = S::WIDE;
+    } else {
+      s.lineSpacing = S::NORMAL;
+    }
+    if (needsResave) *needsResave = true;
+  } else {
+    s.lineSpacing = clamp(rawLineSpacing, S::LINE_COMPRESSION_COUNT, S::NORMAL);
+  }
+
   s.paragraphAlignment =
       clamp(doc["paragraphAlignment"] | (uint8_t)S::JUSTIFIED, S::PARAGRAPH_ALIGNMENT_COUNT, S::JUSTIFIED);
   s.sleepTimeout = clamp(doc["sleepTimeout"] | (uint8_t)S::SLEEP_10_MIN, S::SLEEP_TIMEOUT_COUNT, S::SLEEP_10_MIN);
@@ -135,8 +158,8 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   s.longPressChapterSkip = doc["longPressChapterSkip"] | (uint8_t)1;
   s.statusBarClock = doc["statusBarClock"] | (uint8_t)0;
   s.hyphenationEnabled = doc["hyphenationEnabled"] | (uint8_t)0;
+  s.uiTheme = doc["uiTheme"] | (uint8_t)S::CLASSIC;
   s.sleepWhilePowered = doc["sleepWhilePowered"] | (uint8_t)0;
-  s.uiTheme = doc["uiTheme"] | (uint8_t)S::LYRA;
   s.fadingFix = doc["fadingFix"] | (uint8_t)0;
   s.embeddedStyle = doc["embeddedStyle"] | (uint8_t)1;
   s.darkMode = doc["darkMode"] | (uint8_t)0;
@@ -207,6 +230,7 @@ bool JsonSettingsIO::saveRecentBooks(const RecentBooksStore& store, const char* 
     obj["author"] = book.author;
     obj["coverBmpPath"] = book.coverBmpPath;
     obj["fileSize"] = book.fileSize;
+    obj["progress"] = book.progressPercent;
   }
 
   FsFile file;
@@ -236,6 +260,7 @@ bool JsonSettingsIO::loadRecentBooks(RecentBooksStore& store, const char* json) 
     book.author = obj["author"] | std::string("");
     book.coverBmpPath = obj["coverBmpPath"] | std::string("");
     book.fileSize = obj["fileSize"] | (uint32_t)0;
+    book.progressPercent = obj["progress"] | (uint8_t)0;
     store.recentBooks.push_back(book);
   }
 
@@ -310,5 +335,50 @@ bool JsonSettingsIO::loadReadingStats(ReadingStatsStore& store, const char* json
   }
 
   LOG_DBG("RSS", "Reading stats loaded from file (%zu entries)", store.books.size());
+  return true;
+}
+
+// ---- LibraryStore ----
+
+bool JsonSettingsIO::saveLibrary(const LibraryStore& libStore, const char* path) {
+  FsFile file;
+  if (!Storage.openFileForWrite("LIB", path, file)) {
+    return false;
+  }
+
+  file.print("{\"books\":[");
+  bool first = true;
+  for (const auto& book : libStore.getBooks()) {
+    if (!first) file.print(",");
+    first = false;
+
+    JsonDocument doc;
+    doc["path"] = book.path;
+    doc["sDir"] = book.storageDir;
+    serializeJson(doc, file);
+  }
+  file.print("]}");
+  file.close();
+  return true;
+}
+
+bool JsonSettingsIO::loadLibrary(LibraryStore& libStore, Stream& jsonStream) {
+  JsonDocument doc;
+  auto error = deserializeJson(doc, jsonStream);
+  if (error) {
+    LOG_ERR("LIB", "JSON parse error: %s", error.c_str());
+    return false;
+  }
+
+  libStore.books.clear();
+  JsonArray arr = doc["books"].as<JsonArray>();
+  for (JsonObject obj : arr) {
+    LibraryBook book;
+    book.path = obj["path"] | std::string("");
+    book.storageDir = obj["sDir"] | std::string("");
+    libStore.books.push_back(book);
+  }
+
+  LOG_DBG("LIB", "Library loaded from file (%d entries)", libStore.getCount());
   return true;
 }

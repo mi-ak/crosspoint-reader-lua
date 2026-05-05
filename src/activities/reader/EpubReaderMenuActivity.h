@@ -12,7 +12,7 @@
 class EpubReaderMenuActivity final : public ActivityWithSubactivity {
  public:
   // Menu actions available from the reader menu.
-  enum class MenuAction { SELECT_CHAPTER, GO_TO_PERCENT, ROTATE_SCREEN, SCREENSHOT, GO_HOME, DELETE_CACHE };
+  enum class MenuAction { SELECT_CHAPTER, GO_TO_PERCENT, ROTATE_SCREEN, SCREENSHOT, GO_HOME, DELETE_CACHE, READER_FONT_SIZE, EXTERNAL_FONT };
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
                                   const int currentPage, const int totalPages, const int bookProgressPercent,
@@ -49,8 +49,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   ButtonNavigator buttonNavigator;
   std::string title = "Reader Menu";
   uint8_t pendingOrientation = 0;
-  const std::vector<StrId> orientationLabels = {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW, StrId::STR_INVERTED,
-                                                StrId::STR_LANDSCAPE_CCW};
+  const std::vector<StrId> orientationLabels = {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CCW};
   int currentPage = 0;
   int totalPages = 0;
   int bookProgressPercent = 0;

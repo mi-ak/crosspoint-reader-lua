@@ -143,7 +143,17 @@ bool CrossPointSettings::loadFromBinaryFile() {
     if (++settingsRead >= fileSettingsCount) break;
     readAndValidate(inputFile, statusBar, STATUS_BAR_MODE_COUNT);
     if (++settingsRead >= fileSettingsCount) break;
-    readAndValidate(inputFile, orientation, ORIENTATION_COUNT);
+    {
+      uint8_t tempValue;
+      serialization::readPod(inputFile, tempValue);
+      if (tempValue == 3) {
+        orientation = LANDSCAPE_CCW;
+      } else if (tempValue == 1 || tempValue == 2) {
+        orientation = PORTRAIT;
+      } else {
+        orientation = tempValue;
+      }
+    }
     if (++settingsRead >= fileSettingsCount) break;
     readAndValidate(inputFile, frontButtonLayout, FRONT_BUTTON_LAYOUT_COUNT);
     if (++settingsRead >= fileSettingsCount) break;
@@ -151,7 +161,15 @@ bool CrossPointSettings::loadFromBinaryFile() {
     if (++settingsRead >= fileSettingsCount) break;
     readAndValidate(inputFile, fontFamily, FONT_FAMILY_COUNT);
     if (++settingsRead >= fileSettingsCount) break;
-    readAndValidate(inputFile, fontSize, FONT_SIZE_COUNT);
+    {
+      uint8_t tempValue;
+      serialization::readPod(inputFile, tempValue);
+      if (tempValue == 3) {
+        fontSize = LARGE;
+      } else {
+        fontSize = tempValue < FONT_SIZE_COUNT ? tempValue : MEDIUM;
+      }
+    }
     if (++settingsRead >= fileSettingsCount) break;
     readAndValidate(inputFile, lineSpacing, LINE_COMPRESSION_COUNT);
     if (++settingsRead >= fileSettingsCount) break;
@@ -163,7 +181,11 @@ bool CrossPointSettings::loadFromBinaryFile() {
     if (++settingsRead >= fileSettingsCount) break;
     serialization::readPod(inputFile, screenMargin);
     if (++settingsRead >= fileSettingsCount) break;
-    readAndValidate(inputFile, sleepScreenCoverMode, SLEEP_SCREEN_COVER_MODE_COUNT);
+    {
+      uint8_t temp;
+      readAndValidate(inputFile, temp, SLEEP_SCREEN_COVER_MODE_COUNT);
+      sleepScreenCoverMode = FIT;
+    }
     if (++settingsRead >= fileSettingsCount) break;
     {
       std::string urlStr;
@@ -223,23 +245,19 @@ float CrossPointSettings::getReaderLineCompression() const {
     case BOOKERLY:
     default:
       switch (lineSpacing) {
-        case TIGHT:
-          return 0.95f;
         case NORMAL:
         default:
-          return 1.0f;
+          return 1.2f;
         case WIDE:
-          return 1.1f;
+          return 1.4f;
       }
     case NOTOSANS:
       switch (lineSpacing) {
-        case TIGHT:
-          return 0.90f;
         case NORMAL:
         default:
-          return 0.95f;
+          return 1.2f;
         case WIDE:
-          return 1.0f;
+          return 1.4f;
       }
 
   }
@@ -289,8 +307,6 @@ int CrossPointSettings::getReaderFontId() const {
           return BOOKERLY_14_FONT_ID;
         case LARGE:
           return BOOKERLY_16_FONT_ID;
-        case EXTRA_LARGE:
-          return BOOKERLY_18_FONT_ID;
       }
     case NOTOSANS:
       switch (fontSize) {
@@ -301,8 +317,6 @@ int CrossPointSettings::getReaderFontId() const {
           return NOTOSANS_14_FONT_ID;
         case LARGE:
           return NOTOSANS_16_FONT_ID;
-        case EXTRA_LARGE:
-          return NOTOSANS_18_FONT_ID;
       }
 
   }

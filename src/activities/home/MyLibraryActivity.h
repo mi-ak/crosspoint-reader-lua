@@ -9,15 +9,29 @@
 
 class MyLibraryActivity final : public Activity {
  private:
-  enum class MenuState { None, Delete, Confirm };
+  enum class MenuState { None, ContextMenu, ConfirmDelete };
+  enum class ViewMode { Grid, List };
 
   ButtonNavigator buttonNavigator;
 
   size_t selectorIndex = 0;
   bool skipNextButtonCheck = false;
+  bool pageRendered = false; // Whether the current page base (thumbs) is drawn
 
+  // Render Caching - Frame Buffer Snapshot (v3.5.0)
+  uint8_t* pageBuffer = nullptr;
+  bool pageBufferStored = false;
+  bool storePageBuffer();
+  bool restorePageBuffer();
+  void freePageBuffer();
+
+  ViewMode viewMode = ViewMode::Grid;
   MenuState menuState = MenuState::None;
-  int menuSelectedIndex = 0;  // 0=Delete, 1=Cancel / 0=Yes, 1=No
+  int menuSelectedIndex = 0;  // Index in the current menu
+
+  // Long-press handling for Confirm button (Mode Toggle)
+  uint32_t confirmPressedStartTime = 0;
+  bool longPressHandled = false;
 
   // Files state
   std::string basepath = "/";
@@ -32,16 +46,34 @@ class MyLibraryActivity final : public Activity {
   size_t findEntry(const std::string& name) const;
 
   void deleteSelectedFile();
-  void renderDeleteMenu() const;
-  void renderConfirmDialog() const;
+  void renderList() const;
+  void renderGallery();
+  void renderContextMenu() const;
+  void renderConfirmDelete() const;
+
+  // Render Caching (v3.4.3)
+  struct ItemRenderCache {
+    std::string path;
+    bool isDir = false;
+    std::vector<std::string> wrappedName;
+    bool hasThumb = false;
+    std::string thumbPath;
+    int fileCount = -1;  // -1 for non-dir or not calculated, >= 0 for dirs
+    bool hasFolderThumb = false;
+    std::string folderThumbPath;
+  };
+  std::vector<ItemRenderCache> pageCache;
+  int cachedPageStart = -1;
+  void invalidateCache() { cachedPageStart = -1; }
+  void updatePageCache(int pageStart, int count);
 
  public:
   explicit MyLibraryActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                              const std::function<void()>& onGoHome,
                              const std::function<void(const std::string& path)>& onSelectBook,
-                             std::string initialPath = "/")
+                             std::string initialPath = "/books")
       : Activity("MyLibrary", renderer, mappedInput),
-        basepath(initialPath.empty() ? "/" : std::move(initialPath)),
+        basepath(initialPath.empty() ? "/books" : std::move(initialPath)),
         onSelectBook(onSelectBook),
         onGoHome(onGoHome) {}
   void onEnter() override;
