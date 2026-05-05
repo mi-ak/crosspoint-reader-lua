@@ -28,6 +28,7 @@ bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent) {
   LOG_DBG("HTTP", "Fetching: %s", url.c_str());
 
   http.begin(*client, url.c_str());
+  http.setTimeout(8000);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.addHeader("User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
 
@@ -74,6 +75,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   LOG_DBG("HTTP", "Destination: %s", destPath.c_str());
 
   http.begin(*client, url.c_str());
+  http.setTimeout(8000);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.addHeader("User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
 

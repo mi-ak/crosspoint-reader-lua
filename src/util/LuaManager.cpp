@@ -11,6 +11,7 @@
 #include "components/UITheme.h"
 #include "WifiCredentialStore.h"
 #include "network/HttpDownloader.h"
+#include "TimeService.h"
 #include <HTTPClient.h>
 #include <NetworkClient.h>
 #include <NetworkClientSecure.h>
@@ -541,6 +542,7 @@ static int l_net_get(lua_State* L) {
         }
         HTTPClient http;
         http.begin(*client, url);
+        http.setTimeout(8000);
         http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
         http.addHeader("User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
         for (auto& h : headers) http.addHeader(h.first.c_str(), h.second.c_str());
@@ -576,6 +578,46 @@ static int l_net_urlencode(lua_State* L) {
         }
     }
     lua_pushstring(L, out.c_str());
+    return 1;
+}
+
+// time.syncNow() → boolean
+static int l_time_sync_now(lua_State* L) {
+    lua_pushboolean(L, TIME_SERVICE.syncNow());
+    return 1;
+}
+
+// time.syncIfDue() → boolean
+static int l_time_sync_if_due(lua_State* L) {
+    lua_pushboolean(L, TIME_SERVICE.syncIfDue());
+    return 1;
+}
+
+// time.hasValidTime() → boolean
+static int l_time_has_valid_time(lua_State* L) {
+    lua_pushboolean(L, TIME_SERVICE.hasValidTime());
+    return 1;
+}
+
+// time.formatDate() → string | nil
+static int l_time_format_date(lua_State* L) {
+    char buf[32] = {0};
+    if (TIME_SERVICE.formatDate(buf, sizeof(buf))) {
+        lua_pushstring(L, buf);
+    } else {
+        lua_pushnil(L);
+    }
+    return 1;
+}
+
+// time.formatClock() → string | nil
+static int l_time_format_clock(lua_State* L) {
+    char buf[32] = {0};
+    if (TIME_SERVICE.formatClock(buf, sizeof(buf))) {
+        lua_pushstring(L, buf);
+    } else {
+        lua_pushnil(L);
+    }
     return 1;
 }
 
@@ -703,6 +745,15 @@ void LuaManager::registerBindings() {
     lua_pushcfunction(L, l_net_get);             lua_setfield(L, -2, "get");
     lua_pushcfunction(L, l_net_urlencode);       lua_setfield(L, -2, "urlencode");
     lua_setglobal(L, "net");
+
+    // time.*
+    lua_newtable(L);
+    lua_pushcfunction(L, l_time_sync_now);      lua_setfield(L, -2, "syncNow");
+    lua_pushcfunction(L, l_time_sync_if_due);   lua_setfield(L, -2, "syncIfDue");
+    lua_pushcfunction(L, l_time_has_valid_time); lua_setfield(L, -2, "hasValidTime");
+    lua_pushcfunction(L, l_time_format_date);   lua_setfield(L, -2, "formatDate");
+    lua_pushcfunction(L, l_time_format_clock);  lua_setfield(L, -2, "formatClock");
+    lua_setglobal(L, "time");
 
     // Refresh mode constants
     lua_pushinteger(L, HalDisplay::FULL_REFRESH); lua_setglobal(L, "REFRESH_FULL");

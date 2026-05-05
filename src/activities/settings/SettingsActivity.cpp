@@ -13,6 +13,7 @@
 #include "activities/network/CalibreConnectActivity.h"
 #include "activities/settings/ButtonRemapActivity.h"
 #include "activities/settings/ReadingStatsActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/TimeService.h"
@@ -158,26 +159,47 @@ void SettingsActivity::toggleCurrentSetting() {
 
   const auto& setting = (*currentSettings)[selectedSetting];
 
+  auto enterSubActivity = [this](Activity* activity) {
+    exitActivity();
+    enterNewActivity(activity);
+  };
+
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
     // Toggle the boolean value using the member pointer
     const bool currentValue = SETTINGS.*(setting.valuePtr);
     SETTINGS.*(setting.valuePtr) = !currentValue;
-  } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
-    const uint8_t currentValue = SETTINGS.*(setting.valuePtr);
-    SETTINGS.*(setting.valuePtr) = (currentValue + 1) % static_cast<uint8_t>(setting.enumValues.size());
-  } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
-    const int8_t currentValue = SETTINGS.*(setting.valuePtr);
-    if (currentValue + setting.valueRange.step > setting.valueRange.max) {
-      SETTINGS.*(setting.valuePtr) = setting.valueRange.min;
+  } else if (setting.type == SettingType::ENUM) {
+    uint8_t currentValue = 0;
+    if (setting.valuePtr != nullptr) {
+      currentValue = SETTINGS.*(setting.valuePtr);
+    } else if (setting.valueGetter) {
+      currentValue = setting.valueGetter();
     } else {
-      SETTINGS.*(setting.valuePtr) = currentValue + setting.valueRange.step;
+      return;
+    }
+    const uint8_t nextValue = (currentValue + 1) % static_cast<uint8_t>(setting.enumValues.size());
+    if (setting.valuePtr != nullptr) {
+      SETTINGS.*(setting.valuePtr) = nextValue;
+    } else if (setting.valueSetter) {
+      setting.valueSetter(nextValue);
+    }
+  } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
+    if (setting.stringGetter && setting.stringSetter) {
+      const std::string currentValue = setting.stringGetter();
+      enterSubActivity(new KeyboardEntryActivity(
+          renderer, mappedInput, I18N.get(setting.nameId), currentValue, 32, false,
+          [this, setting](const std::string& text) {
+            setting.stringSetter(text);
+            SETTINGS.saveToFile();
+            exitActivity();
+            requestUpdate();
+          },
+          [this] {
+            exitActivity();
+            requestUpdate();
+          }));
     }
   } else if (setting.type == SettingType::ACTION) {
-    auto enterSubActivity = [this](Activity* activity) {
-      exitActivity();
-      enterNewActivity(activity);
-    };
-
     auto onComplete = [this] {
       exitActivity();
       requestUpdate();
@@ -302,11 +324,24 @@ void SettingsActivity::render(Activity::RenderLock&&) {
         if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
           const bool value = SETTINGS.*(setting.valuePtr);
           valueText = value ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
-        } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
-          const uint8_t value = SETTINGS.*(setting.valuePtr);
-          valueText = I18N.get(setting.enumValues[value]);
+        } else if (setting.type == SettingType::ENUM) {
+          uint8_t value = 0;
+          if (setting.valuePtr != nullptr) {
+            value = SETTINGS.*(setting.valuePtr);
+          } else if (setting.valueGetter) {
+            value = setting.valueGetter();
+          }
+          if (value < setting.enumValues.size()) {
+            valueText = I18N.get(setting.enumValues[value]);
+          }
         } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
           valueText = std::to_string(SETTINGS.*(setting.valuePtr));
+        } else if (setting.type == SettingType::STRING) {
+          if (setting.stringGetter) {
+            valueText = setting.stringGetter();
+          } else if (setting.stringPtr) {
+            valueText = setting.stringPtr;
+          }
         }
         return valueText;
       },

@@ -7,6 +7,23 @@
 #include "CrossPointSettings.h"
 #include "activities/settings/SettingsActivity.h"
 
+static inline const std::pair<const char*, StrId> TIMEZONE_OPTIONS[] = {
+    {"JST-9", StrId::STR_TIME_ZONE_JST9},
+    {"UTC0", StrId::STR_TIME_ZONE_UTC0},
+    {"CST-8", StrId::STR_TIME_ZONE_CST8},
+    {"IST-5:30", StrId::STR_TIME_ZONE_IST5D30},
+    {"PST8PDT", StrId::STR_TIME_ZONE_PST8PDT},
+    {"MST7MDT", StrId::STR_TIME_ZONE_MST7MDT},
+    {"CST6CDT", StrId::STR_TIME_ZONE_CST6CDT},
+    {"EST5EDT", StrId::STR_TIME_ZONE_EST5EDT},
+    {"CET-1CEST,M3.5.0/02:00,M10.5.0/03:00", StrId::STR_TIME_ZONE_CET},
+    {"GMT0BST,M3.5.0/01:00,M10.5.0/02:00", StrId::STR_TIME_ZONE_GMT0BST},
+    {"AEST-10AEDT,M10.1.0/02:00,M4.1.0/03:00", StrId::STR_TIME_ZONE_AEST10AEDT},
+    {"NZST-12NZDT,M10.1.0/02:00,M4.1.0/03:00", StrId::STR_TIME_ZONE_NZST12NZDT},
+};
+static inline const uint8_t TIMEZONE_OPTION_COUNT =
+    static_cast<uint8_t>(sizeof(TIMEZONE_OPTIONS) / sizeof(TIMEZONE_OPTIONS[0]));
+
 // Shared settings list used by both the device settings UI and the web settings API.
 // Each entry has a key (for JSON API) and category (for grouping).
 // ACTION-type entries and entries without a key are device-only.
@@ -85,6 +102,26 @@ inline std::vector<SettingInfo> getSettingsList() {
                         "sleepTimeout", StrId::STR_CAT_SYSTEM),
       SettingInfo::Enum(StrId::STR_LANGUAGE, &CrossPointSettings::language,
                         {StrId::STR_LANG_ENGLISH, StrId::STR_LANG_T_CHINESE}, "language", StrId::STR_CAT_SYSTEM),
+      SettingInfo::DynamicEnum(
+          StrId::STR_TIME_ZONE,
+          {StrId::STR_TIME_ZONE_JST9, StrId::STR_TIME_ZONE_UTC0, StrId::STR_TIME_ZONE_PST8PDT,
+           StrId::STR_TIME_ZONE_CET},
+          []() -> uint8_t {
+            for (uint8_t i = 0; i < TIMEZONE_OPTION_COUNT; ++i) {
+              if (SETTINGS.timeZone == TIMEZONE_OPTIONS[i].first) {
+                return i;
+              }
+            }
+            return 0;
+          },
+          [](const uint8_t index) {
+            if (index < TIMEZONE_OPTION_COUNT) {
+              SETTINGS.timeZone = TIMEZONE_OPTIONS[index].first;
+              setenv("TZ", SETTINGS.timeZone.c_str(), 1);
+              tzset();
+            }
+          },
+          "timeZone", StrId::STR_CAT_SYSTEM),
       SettingInfo::Action(StrId::STR_TIME_SYNC, SettingAction::TimeSync, StrId::STR_CAT_SYSTEM),
   };
 }
