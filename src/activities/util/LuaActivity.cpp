@@ -95,7 +95,5 @@ void LuaActivity::showError(const char* msg) {
 }
 
 void LuaActivity::clearPluginResumeState() {
-    APP_STATE.lastSleepFromPlugin = false;
-    APP_STATE.lastPluginName.clear();
-    APP_STATE.saveToFile();
+    APP_STATE.clearPluginResumeState();
 }

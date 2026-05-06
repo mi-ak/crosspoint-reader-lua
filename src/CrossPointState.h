@@ -22,6 +22,8 @@ class CrossPointState {
 
   bool loadFromFile();
 
+  static void clearPluginResumeState();
+
  private:
   bool loadFromBinaryFile();
 };

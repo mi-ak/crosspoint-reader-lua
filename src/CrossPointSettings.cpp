@@ -116,6 +116,9 @@ bool CrossPointSettings::loadFromFile() {
 }
 
 bool CrossPointSettings::loadFromBinaryFile() {
+#ifdef UNIT_TEST
+  return false;
+#else
   FsFile inputFile;
   if (!Storage.openFileForRead("CPS", SETTINGS_FILE_BIN, inputFile)) {
     return false;
@@ -238,6 +241,7 @@ bool CrossPointSettings::loadFromBinaryFile() {
   inputFile.close();
   LOG_DBG("CPS", "Settings loaded from binary file");
   return true;
+#endif
 }
 
 float CrossPointSettings::getReaderLineCompression() const {

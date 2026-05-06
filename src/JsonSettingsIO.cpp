@@ -3,16 +3,19 @@
 #include <ArduinoJson.h>
 #include <HalStorage.h>
 #include <Logging.h>
-#include <ObfuscationUtils.h>
 
 #include <cstring>
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+
+#ifndef UNIT_TEST
+#include <ObfuscationUtils.h>
 #include "ReadingStatsStore.h"
 #include "RecentBooksStore.h"
 #include "WifiCredentialStore.h"
 #include "LibraryStore.h"
+#endif  // !UNIT_TEST
 
 // ---- CrossPointState ----
 
@@ -25,9 +28,15 @@ bool JsonSettingsIO::saveState(const CrossPointState& s, const char* path) {
   doc["lastSleepFromPlugin"] = s.lastSleepFromPlugin;
   doc["lastPluginName"] = s.lastPluginName;
 
+#ifdef UNIT_TEST
+  std::string json;
+  serializeJson(doc, json);
+  return Storage.writeFile(path, json.c_str());
+#else
   String json;
   serializeJson(doc, json);
   return Storage.writeFile(path, json);
+#endif
 }
 
 bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
@@ -84,9 +93,15 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   doc["timeZone"] = s.timeZone;
   doc["v"] = (uint8_t)2; // Settings version for migration
 
+#ifdef UNIT_TEST
+  std::string json;
+  serializeJson(doc, json);
+  return Storage.writeFile(path, json.c_str());
+#else
   String json;
   serializeJson(doc, json);
   return Storage.writeFile(path, json);
+#endif
 }
 
 bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool* needsResave) {
@@ -110,10 +125,10 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   s.textAntiAliasing = doc["textAntiAliasing"] | (uint8_t)1;
   s.shortPwrBtn = clamp(doc["shortPwrBtn"] | (uint8_t)S::IGNORE, S::SHORT_PWRBTN_COUNT, S::IGNORE);
   uint8_t rawOrientation = doc["orientation"] | (uint8_t)S::PORTRAIT;
-  if (rawOrientation == 3) {
-    rawOrientation = S::LANDSCAPE_CCW;
-  } else if (rawOrientation == 1 || rawOrientation == 2) {
-    rawOrientation = S::PORTRAIT;
+  if (rawOrientation >= S::ORIENTATION_COUNT) {
+    // Legacy migration: old firmware used 4 orientations (0=portrait,
+    // 1=CW, 2=inverted, 3=CCW). Map old CCW(3) → LANDSCAPE_CCW; others → PORTRAIT.
+    rawOrientation = (rawOrientation == 3) ? (uint8_t)S::LANDSCAPE_CCW : (uint8_t)S::PORTRAIT;
   }
   s.orientation = clamp(rawOrientation, S::ORIENTATION_COUNT, S::PORTRAIT);
   s.sideButtonLayout =
@@ -169,6 +184,8 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   LOG_DBG("CPS", "Settings loaded from file");
   return true;
 }
+
+#ifndef UNIT_TEST
 
 // ---- WifiCredentialStore ----
 
@@ -382,3 +399,5 @@ bool JsonSettingsIO::loadLibrary(LibraryStore& libStore, Stream& jsonStream) {
   LOG_DBG("LIB", "Library loaded from file (%d entries)", libStore.getCount());
   return true;
 }
+
+#endif  // !UNIT_TEST

@@ -37,4 +37,5 @@ class ReaderActivity final : public ActivityWithSubactivity {
         onGoToLibrary(onGoToLibrary) {}
   void onEnter() override;
   bool isReaderActivity() const override { return true; }
+  bool isLuaActivity() const override { return false; }
 };

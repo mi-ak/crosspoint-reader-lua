@@ -259,20 +259,12 @@ void setup() {
   enterNewActivity(new BootActivity(renderer, mappedInputManager));
   APP_STATE.loadFromFile(); RECENT_BOOKS.loadFromFile(); READING_STATS.loadFromFile();
   LIBRARY_STORE.loadFromFile();
-  auto clearPluginResumeState = []() {
-    if (APP_STATE.lastSleepFromPlugin || !APP_STATE.lastPluginName.empty()) {
-      APP_STATE.lastSleepFromPlugin = false;
-      APP_STATE.lastPluginName.clear();
-      APP_STATE.saveToFile();
-    }
-  };
-
   if (APP_STATE.lastSleepFromPlugin && !APP_STATE.lastPluginName.empty() && !mappedInputManager.isPressed(MappedInputManager::Button::Back)) {
     std::string pluginName = APP_STATE.lastPluginName;
-    clearPluginResumeState();
+    APP_STATE.clearPluginResumeState();
     onGoToLuaPlugin(pluginName);
   } else {
-    clearPluginResumeState();
+    APP_STATE.clearPluginResumeState();
     LIBRARY_STORE.loadFromFile();
   if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader || mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
       onGoHome();

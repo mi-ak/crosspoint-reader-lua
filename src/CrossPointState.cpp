@@ -45,7 +45,19 @@ bool CrossPointState::loadFromFile() {
   return false;
 }
 
+void CrossPointState::clearPluginResumeState() {
+  auto& state = getInstance();
+  if (state.lastSleepFromPlugin || !state.lastPluginName.empty()) {
+    state.lastSleepFromPlugin = false;
+    state.lastPluginName.clear();
+    state.saveToFile();
+  }
+}
+
 bool CrossPointState::loadFromBinaryFile() {
+#ifdef UNIT_TEST
+  return false;
+#else
   FsFile inputFile;
   if (!Storage.openFileForRead("CPS", STATE_FILE_BIN, inputFile)) {
     return false;
@@ -86,4 +98,5 @@ bool CrossPointState::loadFromBinaryFile() {
 
   inputFile.close();
   return true;
+#endif
 }
