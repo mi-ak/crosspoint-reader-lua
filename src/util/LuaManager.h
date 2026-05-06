@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 
 extern "C" {
@@ -25,6 +26,14 @@ public:
     void setWantsExit() { wantsExit = true; }
     bool checkAndClearWantsExit() { bool r = wantsExit; wantsExit = false; return r; }
 
+    // ctx.display callback — set from main.cpp before any LuaActivity starts
+    void setDisplayCardCallback(std::function<void(const std::string&)> cb) { onDisplayCard = std::move(cb); }
+    bool callDisplayCard(const std::string& cardJson) {
+        if (!onDisplayCard) return false;
+        onDisplayCard(cardJson);
+        return true;
+    }
+
     lua_State* getState() { return L; }
 
 private:
@@ -36,6 +45,7 @@ private:
     lua_State* L = nullptr;
     bool initialized = false;
     bool wantsExit = false;
+    std::function<void(const std::string&)> onDisplayCard;
 
     void registerBindings();
 };

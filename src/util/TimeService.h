@@ -48,6 +48,7 @@ class TimeService {
   bool setManualTime(int year, int month, int day, int hour, int minute);
   uint32_t getTodayValue() const;
   void persistIfValid();
+  time_t getLastSuccessfulSyncEpoch() const { return lastSuccessfulSyncEpoch; }
   bool formatDate(char* buffer, size_t bufferSize) const;
   bool formatClock(char* buffer, size_t bufferSize) const;
   int getTopInfoBarInset(const GfxRenderer& renderer) const;

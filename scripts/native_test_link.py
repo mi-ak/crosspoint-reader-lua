@@ -25,5 +25,5 @@ if os.path.isdir(arduino_json_inc):
 env.BuildSources(
     os.path.join("$BUILD_DIR", "src"),  # variant output dir for .o files
     "$PROJECT_SRC_DIR",                  # source root (src/)
-    "-<*> +<CrossPointState.cpp> +<CrossPointSettings.cpp> +<JsonSettingsIO.cpp>",
+    "-<*> +<CrossPointState.cpp> +<CrossPointSettings.cpp> +<JsonSettingsIO.cpp> +<CardBridgePath.cpp>",
 )

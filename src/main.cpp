@@ -31,6 +31,8 @@
 #include "activities/util/FullScreenMessageActivity.h"
 #include "activities/util/LuaActivity.h"
 #include "activities/util/PluginListActivity.h"
+#include "activities/card/CardDisplayActivity.h"
+#include "activities/card/PairingActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/ButtonNavigator.h"
@@ -38,6 +40,7 @@
 #include "util/LuaManager.h"
 
 #include "util/TimeService.h"
+#include "CardBridgeManager.h"
 
 HalDisplay display;
 HalGPIO gpio;
@@ -208,9 +211,17 @@ void onGoToLuaPlugin(const std::string& pluginName) {
   enterNewActivity(new LuaActivity(renderer, mappedInputManager, pluginName, onGoToLuaPlugins));
 }
 
+void onGoToCardDisplay(const std::string& cardJson) {
+  enterNewActivity(new CardDisplayActivity(renderer, mappedInputManager, cardJson, onGoHome));
+}
+
+void onGoToPairing() {
+  enterNewActivity(new PairingActivity(renderer, mappedInputManager, onGoHome, onGoToLuaPlugin));
+}
+
 void onGoHome() {
   enterNewActivity(new HomeActivity(renderer, mappedInputManager, onGoToReader, onGoToMyLibrary, onGoToRecentBooks,
-                                     onGoToSettings, onGoToLuaPlugins));
+                                     onGoToSettings, onGoToLuaPlugins, onGoToPairing));
 }
 
 void setupDisplayAndFonts() {
@@ -239,6 +250,8 @@ void setup() {
     return;
   }
   SETTINGS.loadFromFile(); I18N.loadSettings(); 
+  CARD_BRIDGE.begin();
+  LuaManager::getInstance().setDisplayCardCallback(onGoToCardDisplay);
   lastActivityMillis = millis();
   // Sync I18n with global settings if different (I18N.loadSettings loads from its own file, 
   // but SETTINGS.language is the source of truth for the UI enum)
@@ -297,6 +310,9 @@ void loop() {
   if (currentActivity && !currentActivity->preventAutoSleep() && (millis() - lastActivityMillis > SETTINGS.getSleepTimeoutMs())) {
     enterDeepSleep();
   }
+
+  // TODO: tick CardBridgeSession for TTL expiry
+  // CardBridgeSession::getInstance().tick(millis());
 
   if (currentActivity) currentActivity->loop();
   if (currentActivity && currentActivity->skipLoopDelay()) { powerManager.setPowerSaving(false); yield(); }

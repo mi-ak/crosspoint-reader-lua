@@ -230,7 +230,7 @@ void HomeActivity::loop() {
   }
 
   const int bookCount = static_cast<int>(recentBooks.size());
-  const int menuCount = 4;
+  const int menuCount = 5;
 
   // Power button short press = Confirm (when configured as PAGE_TURN)
   const bool powerConfirm = (SETTINGS.shortPwrBtn == CrossPointSettings::PAGE_TURN) &&
@@ -256,7 +256,7 @@ void HomeActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
     if (focusZone == Zone::BOOKS) {
       focusZone = Zone::MENU;
-      menuSelectorIndex = 3; // Start at Settings
+      menuSelectorIndex = menuCount - 1; // Start at last item
     } else {
       menuSelectorIndex = (menuSelectorIndex + menuCount - 1) % menuCount;
     }
@@ -283,6 +283,7 @@ void HomeActivity::loop() {
       else if (menuSelectorIndex == 1) onRecentsOpen();
       else if (menuSelectorIndex == 2) onPluginsOpen();
       else if (menuSelectorIndex == 3) onSettingsOpen();
+      else if (menuSelectorIndex == 4) onCardBridgeOpen();
     }
     return;
   }
@@ -320,8 +321,9 @@ void HomeActivity::render(Activity::RenderLock&&) {
                           labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_RECENTS),
-                                        tr(STR_PLUGINS), tr(STR_SETTINGS_TITLE)};
-  std::vector<UIIcon> menuIcons = {Folder, Recent, Game, Settings};
+                                        tr(STR_PLUGINS), tr(STR_SETTINGS_TITLE),
+                                        "Cards"};
+  std::vector<UIIcon> menuIcons = {Folder, Recent, Game, Settings, Wifi};
 
   // Add extra spacing below books
   int menuY = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.verticalSpacing + 30;

@@ -284,8 +284,8 @@ void TimeTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
     }
     
     // Label (English only as requested by user)
-    const char* englishLabels[] = {"Library", "Recent", "Plugins", "Settings"};
-    const char* label = (i < 4) ? englishLabels[i] : "";
+    const char* englishLabels[] = {"Library", "Recent", "Plugins", "Settings", "Cards"};
+    const char* label = (i < 5) ? englishLabels[i] : "";
     int textWidth = renderer.getTextWidth(SMALL_FONT_ID, label);
     int textY = y + boxPaddingV + 32 + 10;
     // Unselected text is gray, selected is black

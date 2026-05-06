@@ -10,9 +10,14 @@
 
 #include <algorithm>
 
+#include "CardBridgeSession.h"
+#include "CardBridgeTokens.h"
+#include "CardStore.h"
+#include "FolderStore.h"
 #include "CrossPointSettings.h"
 #include "SettingsList.h"
 #include "WebDAVHandler.h"
+#include "html/CardBridgePageHtml.generated.h"
 #include "html/FilesPageHtml.generated.h"
 #include "html/HomePageHtml.generated.h"
 #include "html/SettingsPageHtml.generated.h"
@@ -157,12 +162,45 @@ void CrossPointWebServer::begin() {
   server->on("/api/settings", HTTP_GET, [this] { handleGetSettings(); });
   server->on("/api/settings", HTTP_POST, [this] { handlePostSettings(); });
 
+  // Card Bridge endpoints
+  server->on("/cards", HTTP_GET, [this] { handleCardBridgePage(); });
+  server->on("/pair", HTTP_GET, [this] { handleCardBridgePair(); });
+  server->on("/api/session/claim", HTTP_POST, [this] { handleCardBridgeClaim(); });
+  server->on("/api/session/heartbeat", HTTP_POST, [this] { handleCardBridgeHeartbeat(); });
+  server->on("/api/session/close", HTTP_POST, [this] { handleCardBridgeClose(); });
+
+  // Card API endpoints (Phase 2)
+  server->on("/api/cards", HTTP_GET, [this] { handleApiGetCards(); });
+  server->on("/api/cards", HTTP_POST, [this] { handleApiPostCards(); });
+  server->on("/api/card", HTTP_GET, [this] { handleApiGetCard(); });
+  server->on("/api/card", HTTP_PUT, [this] { handleApiPutCard(); });
+  server->on("/api/card/move", HTTP_POST, [this] { handleApiMoveCard(); });
+  server->on("/api/card/trash", HTTP_POST, [this] { handleApiTrashCard(); });
+  server->on("/api/card/restore", HTTP_POST, [this] { handleApiRestoreCard(); });
+
+  // Folder API endpoints (Phase 2)
+  server->on("/api/folders", HTTP_GET, [this] { handleApiGetFolders(); });
+  server->on("/api/folders", HTTP_POST, [this] { handleApiPostFolders(); });
+
+  // Link API endpoints (Phase 4)
+  server->on("/api/links", HTTP_GET, [this] { handleApiGetLinks(); });
+  server->on("/api/links", HTTP_POST, [this] { handleApiPostLinks(); });
+  server->on("/api/link/delete", HTTP_POST, [this] { handleApiDeleteLink(); });
+
+  // Card Run API
+  server->on("/api/plugins", HTTP_GET, [this] { handleApiGetPlugins(); });
+  server->on("/api/card/run", HTTP_POST, [this] { handleApiCardRun(); });
+
+  // Display API endpoints
+  server->on("/api/display/card", HTTP_POST, [this] { handleApiDisplayCard(); });
+  server->on("/api/display/text", HTTP_POST, [this] { handleApiDisplayText(); });
+
   server->onNotFound([this] { handleNotFound(); });
   LOG_DBG("WEB", "[MEM] Free heap after route setup: %d bytes", ESP.getFreeHeap());
 
   // Collect WebDAV headers and register handler
-  const char* davHeaders[] = {"Depth", "Destination", "Overwrite", "If", "Lock-Token", "Timeout"};
-  server->collectHeaders(davHeaders, 6);
+  const char* davHeaders[] = {"Depth", "Destination", "Overwrite", "If", "Lock-Token", "Timeout", "Authorization"};
+  server->collectHeaders(davHeaders, 7);
   server->addHandler(new WebDAVHandler());  // Note: WebDAVHandler will be deleted by WebServer when server is stopped
   LOG_DBG("WEB", "WebDAV handler initialized");
 
@@ -1032,6 +1070,11 @@ void CrossPointWebServer::handleSettingsPage() const {
   LOG_DBG("WEB", "Served settings page");
 }
 
+void CrossPointWebServer::handleCardBridgePage() const {
+  sendHtmlContent(server.get(), CardBridgePageHtml, sizeof(CardBridgePageHtml));
+  LOG_DBG("WEB", "Served card bridge page");
+}
+
 void CrossPointWebServer::handleGetSettings() const {
   auto settings = getSettingsList();
 
@@ -1336,5 +1379,725 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
 
     default:
       break;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Card Bridge helpers
+// ---------------------------------------------------------------------------
+
+std::string CrossPointWebServer::extractBearerToken() const {
+  if (server->hasHeader("Authorization")) {
+    const String auth = server->header("Authorization");
+    if (auth.startsWith("Bearer ")) {
+      return std::string(auth.substring(7).c_str());
+    }
+  }
+  return {};
+}
+
+// ---------------------------------------------------------------------------
+// Card Bridge handlers
+// ---------------------------------------------------------------------------
+
+// GET /pair
+// Returns JSON describing the pairing status (device shows QR code separately)
+void CrossPointWebServer::handleCardBridgePair() const {
+  JsonDocument doc;
+  // クエリパラメータ "code" を確認
+  const String code = server->arg("code");
+  if (code.length() > 0) {
+    // code パラメータがある場合: ペアリング情報を返す
+    // クライアントはこれを受け取って POST /api/session/claim を呼ぶ
+    doc["pairing_token"] = code.c_str();
+    doc["claim_url"] = "/api/session/claim";
+    doc["instructions"] = "POST to claim_url with {\"pairing_token\":\"...\"}";
+  } else {
+    // code がない場合: 待機メッセージ
+    doc["status"] = "waiting";
+    doc["message"] = "Use X4 device to display QR code";
+  }
+  String json;
+  serializeJson(doc, json);
+  server->send(200, "application/json", json);
+}
+
+// POST /api/session/claim
+// Body: {"pairing_token": "..."}
+// Response: {"session_token": "...", "next_token": "..."}  or 401
+void CrossPointWebServer::handleCardBridgeClaim() {
+  if (!server->hasArg("plain")) {
+    server->send(400, "application/json", "{\"error\":\"Missing JSON body\"}");
+    return;
+  }
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, server->arg("plain"));
+  if (err) {
+    server->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+    return;
+  }
+  const std::string pairingToken = doc["pairing_token"].as<std::string>();
+  const std::string sessionToken = CardBridgeSession::getInstance().claimSession(pairingToken);
+  if (sessionToken.empty()) {
+    server->send(401, "application/json", "{\"error\":\"Invalid or expired pairing token\"}");
+    return;
+  }
+  // Build response: session_token was returned, next_token is generated internally
+  // We call heartbeat once to get next_token without advancing the rolling window
+  // Instead, expose session_token only - client will get next_token on first heartbeat
+  JsonDocument resp;
+  resp["session_token"] = sessionToken;
+  String json;
+  serializeJson(resp, json);
+  server->send(200, "application/json", json);
+  LOG_DBG("WEB", "Card Bridge session claimed");
+}
+
+// POST /api/session/heartbeat
+// Authorization: Bearer <token>
+// Response: {"next_token": "...", "expires_at": 60000}  or 401
+void CrossPointWebServer::handleCardBridgeHeartbeat() {
+  const std::string bearer = extractBearerToken();
+  const std::string nextToken = CardBridgeSession::getInstance().heartbeat(bearer);
+  if (nextToken.empty()) {
+    server->send(401, "application/json", "{\"error\":\"Unauthorized or session expired\"}");
+    return;
+  }
+  JsonDocument resp;
+  resp["next_token"] = nextToken;
+  resp["expires_at"] = 60000;  // SESSION_TTL_MS: 60 seconds
+  String json;
+  serializeJson(resp, json);
+  server->send(200, "application/json", json);
+}
+
+// POST /api/session/close
+// Authorization: Bearer <token>
+// Response: 200 or 401
+void CrossPointWebServer::handleCardBridgeClose() {
+  const std::string bearer = extractBearerToken();
+  if (!CardBridgeSession::getInstance().validate(bearer)) {
+    server->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+    return;
+  }
+  CardBridgeSession::getInstance().closeSession(bearer);
+  server->send(200, "application/json", "{\"status\":\"closed\"}");
+  LOG_DBG("WEB", "Card Bridge session closed");
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: Card API helpers
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Send JSON error responses
+void sendJsonError(WebServer* srv, int code, const char* error, const char* message = nullptr) {
+  JsonDocument doc;
+  doc["error"] = error;
+  if (message) doc["message"] = message;
+  String json;
+  serializeJson(doc, json);
+  srv->send(code, "application/json", json);
+}
+
+bool requireBearerAuth(WebServer* srv, const std::string& bearer) {
+  if (!CardBridgeSession::getInstance().validate(bearer)) {
+    sendJsonError(srv, 401, "unauthorized");
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// GET /api/cards?folder={folderPath}
+// Response: {"cards": [{"id":"...","type":"...","title":"..."},...]}
+// ---------------------------------------------------------------------------
+void CrossPointWebServer::handleApiGetCards() const {
+  const std::string bearer = extractBearerToken();
+  if (!requireBearerAuth(server.get(), bearer)) return;
+
+  std::string folderPath = "/cards/boxes/inbox";
+  if (server->hasArg("folder")) {
+    folderPath = server->arg("folder").c_str();
+  }
+
+  const auto ids = CardStore::getInstance().listCards(folderPath);
+
+  JsonDocument resp;
+  JsonArray arr = resp["cards"].to<JsonArray>();
+  for (const auto& id : ids) {
+    // Read card directly from its known location for efficiency
+    const std::string cardPath = folderPath + "/" + id + ".json";
+    String content = Storage.readFile(cardPath.c_str());
+    if (content.isEmpty()) continue;
+
+    JsonDocument cardDoc;
+    if (deserializeJson(cardDoc, content) != DeserializationError::Ok) continue;
+
+    JsonObject obj = arr.add<JsonObject>();
+    obj["id"] = id.c_str();
+    obj["type"] = cardDoc["type"] | "";
+    obj["created_at"] = cardDoc["created_at"] | "";
+    obj["updated_at"] = cardDoc["updated_at"] | "";
+    if (cardDoc["data"].is<JsonVariant>()) {
+      obj["data"].set(cardDoc["data"].as<JsonVariant>());
+    }
+  }
+
+  String json;
+  serializeJson(resp, json);
+  server->send(200, "application/json", json);
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/cards
+// Body: {"folder":"...", "type":"...", "data":{...}}
+// Response: {"id":"..."}
+// ---------------------------------------------------------------------------
+void CrossPointWebServer::handleApiPostCards() {
+  const std::string bearer = extractBearerToken();
+  if (!requireBearerAuth(server.get(), bearer)) return;
+
+  if (!server->hasArg("plain")) {
+    sendJsonError(server.get(), 400, "bad_request", "Missing JSON body");
+    return;
+  }
+
+  JsonDocument body;
+  if (deserializeJson(body, server->arg("plain")) != DeserializationError::Ok) {
+    sendJsonError(server.get(), 400, "bad_request", "Invalid JSON");
+    return;
+  }
+
+  const std::string folder = body["folder"] | "/cards/boxes/inbox";
+  const std::string type = body["type"] | "text";
+
+  // Serialize data sub-object
+  String dataStr;
+  if (body["data"].is<JsonVariant>()) {
+    serializeJson(body["data"], dataStr);
+  } else {
+    dataStr = "{}";
+  }
+
+  const std::string id = CardStore::getInstance().createCard(folder, type, dataStr.c_str());
+  if (id.empty()) {
+    sendJsonError(server.get(), 400, "bad_request", "Failed to create card");
+    return;
+  }
+
+  JsonDocument resp;
+  resp["id"] = id.c_str();
+  String json;
+  serializeJson(resp, json);
+  server->send(200, "application/json", json);
+  LOG_DBG("WEB", "Card created: %s", id.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/card?id={id}
+// Response: full card JSON
+// ---------------------------------------------------------------------------
+void CrossPointWebServer::handleApiGetCard() const {
+  const std::string bearer = extractBearerToken();
+  if (!requireBearerAuth(server.get(), bearer)) return;
+
+  if (!server->hasArg("id")) {
+    sendJsonError(server.get(), 400, "bad_request", "Missing id");
+    return;
+  }
+  const std::string id = server->arg("id").c_str();
+
+  const std::string cardJson = CardStore::getInstance().getCard(id);
+  if (cardJson.empty()) {
+    sendJsonError(server.get(), 404, "not_found");
+    return;
+  }
+  server->send(200, "application/json", String(cardJson.c_str()));
+}
+
+// ---------------------------------------------------------------------------
+// PUT /api/card?id={id}
+// Body: {"data":{...}}
+// Response: {"status":"ok"}
+// ---------------------------------------------------------------------------
+void CrossPointWebServer::handleApiPutCard() {
+  const std::string bearer = extractBearerToken();
+  if (!requireBearerAuth(server.get(), bearer)) return;
+
+  if (!server->hasArg("id")) {
+    sendJsonError(server.get(), 400, "bad_request", "Missing id");
+    return;
+  }
+  if (!server->hasArg("plain")) {
+    sendJsonError(server.get(), 400, "bad_request", "Missing JSON body");
+    return;
+  }
+
+  const std::string id = server->arg("id").c_str();
+
+  JsonDocument body;
+  if (deserializeJson(body, server->arg("plain")) != DeserializationError::Ok) {
+    sendJsonError(server.get(), 400, "bad_request", "Invalid JSON");
+    return;
+  }
+
+  String dataStr;
+  JsonVariant dataField = body["data"];
+  if (dataField.is<JsonObject>()) {
+    serializeJson(dataField, dataStr);
+  } else {
+    dataStr = "{}";
+  }
+
+  if (!CardStore::getInstance().updateCard(id, dataStr.c_str())) {
+    sendJsonError(server.get(), 404, "not_found");
+    return;
+  }
+  server->send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/card/move?id={id}
+// Body: {"folder":"..."}
+// Response: {"status":"ok"}
+// ---------------------------------------------------------------------------
+void CrossPointWebServer::handleApiMoveCard() {
+  const std::string bearer = extractBearerToken();
+  if (!requireBearerAuth(server.get(), bearer)) return;
+
+  if (!server->hasArg("id")) {
+    sendJsonError(server.get(), 400, "bad_request", "Missing id");
+    return;
+  }
+  if (!server->hasArg("plain")) {
+    sendJsonError(server.get(), 400, "bad_request", "Missing JSON body");
+    return;
+  }
+
+  const std::string id = server->arg("id").c_str();
+
+  JsonDocument body;
+  if (deserializeJson(body, server->arg("plain")) != DeserializationError::Ok) {
+    sendJsonError(server.get(), 400, "bad_request", "Invalid JSON");
+    return;
+  }
+
+  const std::string newFolder = body["folder"] | "";
+  if (newFolder.empty()) {
+    sendJsonError(server.get(), 400, "bad_request", "Missing folder");
+    return;
+  }
+
+  if (!CardStore::getInstance().moveCard(id, newFolder)) {
+    sendJsonError(server.get(), 404, "not_found");
+    return;
+  }
+  server->send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/card/trash?id={id}
+// Response: {"status":"ok"}
+// ---------------------------------------------------------------------------
+void CrossPointWebServer::handleApiTrashCard() {
+  const std::string bearer = extractBearerToken();
+  if (!requireBearerAuth(server.get(), bearer)) return;
+
+  if (!server->hasArg("id")) {
+    sendJsonError(server.get(), 400, "bad_request", "Missing id");
+    return;
+  }
+  const std::string id = server->arg("id").c_str();
+
+  if (!CardStore::getInstance().trashCard(id)) {
+    sendJsonError(server.get(), 404, "not_found");
+    return;
+  }
+  server->send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/card/restore?id={id}
+// Response: {"status":"ok"}
+// ---------------------------------------------------------------------------
+void CrossPointWebServer::handleApiRestoreCard() {
+  const std::string bearer = extractBearerToken();
+  if (!requireBearerAuth(server.get(), bearer)) return;
+
+  if (!server->hasArg("id")) {
+    sendJsonError(server.get(), 400, "bad_request", "Missing id");
+    return;
+  }
+  const std::string id = server->arg("id").c_str();
+
+  if (!CardStore::getInstance().restoreCard(id)) {
+    sendJsonError(server.get(), 404, "not_found");
+    return;
+  }
+  server->send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/folders?path={path}
+// Response: {"folders": [{"path":"...", "name":"..."},...], "cards": [...]}
+// ---------------------------------------------------------------------------
+void CrossPointWebServer::handleApiGetFolders() const {
+  const std::string bearer = extractBearerToken();
+  if (!requireBearerAuth(server.get(), bearer)) return;
+
+  std::string path = "/cards/boxes";
+  if (server->hasArg("path")) {
+    path = server->arg("path").c_str();
+  }
+
+  const auto subFolders = FolderStore::getInstance().listFolders(path);
+  const auto cardIds = CardStore::getInstance().listCards(path);
+
+  JsonDocument resp;
+
+  JsonArray fArr = resp["folders"].to<JsonArray>();
+  for (const auto& fp : subFolders) {
+    const size_t slashPos = fp.rfind('/');
+    const std::string name = (slashPos != std::string::npos) ? fp.substr(slashPos + 1) : fp;
+    JsonObject obj = fArr.add<JsonObject>();
+    obj["path"] = fp.c_str();
+    obj["name"] = name.c_str();
+  }
+
+  JsonArray cArr = resp["cards"].to<JsonArray>();
+  for (const auto& id : cardIds) {
+    const std::string cardPath = path + "/" + id + ".json";
+    String content = Storage.readFile(cardPath.c_str());
+    if (content.isEmpty()) continue;
+
+    JsonDocument cardDoc;
+    if (deserializeJson(cardDoc, content) != DeserializationError::Ok) continue;
+
+    JsonObject obj = cArr.add<JsonObject>();
+    obj["id"] = id.c_str();
+    obj["type"] = cardDoc["type"] | "";
+    if (cardDoc["data"]["title"].is<const char*>()) {
+      obj["title"] = cardDoc["data"]["title"].as<const char*>();
+    }
+  }
+
+  String json;
+  serializeJson(resp, json);
+  server->send(200, "application/json", json);
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/folders
+// Body: {"path":"...", "title":"..."}
+// Response: {"status":"ok"}
+// ---------------------------------------------------------------------------
+void CrossPointWebServer::handleApiPostFolders() {
+  const std::string bearer = extractBearerToken();
+  if (!requireBearerAuth(server.get(), bearer)) return;
+
+  if (!server->hasArg("plain")) {
+    sendJsonError(server.get(), 400, "bad_request", "Missing JSON body");
+    return;
+  }
+
+  JsonDocument body;
+  if (deserializeJson(body, server->arg("plain")) != DeserializationError::Ok) {
+    sendJsonError(server.get(), 400, "bad_request", "Invalid JSON");
+    return;
+  }
+
+  const std::string path = body["path"] | "";
+  if (path.empty()) {
+    sendJsonError(server.get(), 400, "bad_request", "Missing path");
+    return;
+  }
+  const std::string title = body["title"] | "";
+
+  if (!FolderStore::getInstance().createFolder(path, title)) {
+    sendJsonError(server.get(), 400, "bad_request", "Failed to create folder");
+    return;
+  }
+  server->send(200, "application/json", "{\"status\":\"ok\"}");
+  LOG_DBG("WEB", "Folder created: %s", path.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/links
+// Response: {"links": [...]}
+// ---------------------------------------------------------------------------
+void CrossPointWebServer::handleApiGetLinks() const {
+  const std::string bearer = extractBearerToken();
+  if (!requireBearerAuth(server.get(), bearer)) return;
+
+  String content;
+  if (Storage.exists("/cards/links.json")) {
+    content = Storage.readFile("/cards/links.json");
+  } else {
+    content = "{\"links\":[]}";
+  }
+  server->send(200, "application/json", content);
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/links
+// Body: {"from":"...","to":"...","relation":"..."}
+// Response: {"id":"..."}
+// ---------------------------------------------------------------------------
+void CrossPointWebServer::handleApiPostLinks() {
+  const std::string bearer = extractBearerToken();
+  if (!requireBearerAuth(server.get(), bearer)) return;
+
+  if (!server->hasArg("plain")) {
+    sendJsonError(server.get(), 400, "bad_request", "Missing JSON body");
+    return;
+  }
+
+  JsonDocument body;
+  if (deserializeJson(body, server->arg("plain")) != DeserializationError::Ok) {
+    sendJsonError(server.get(), 400, "bad_request", "Invalid JSON");
+    return;
+  }
+
+  const std::string from = body["from"] | "";
+  const std::string to = body["to"] | "";
+  const std::string relation = body["relation"] | "";
+  if (from.empty() || to.empty()) {
+    sendJsonError(server.get(), 400, "bad_request", "Missing from or to");
+    return;
+  }
+
+  JsonDocument doc;
+  if (Storage.exists("/cards/links.json")) {
+    const String existing = Storage.readFile("/cards/links.json");
+    if (deserializeJson(doc, existing) != DeserializationError::Ok) {
+      doc["links"].to<JsonArray>();
+    }
+  } else {
+    doc["links"].to<JsonArray>();
+  }
+
+  const std::string id = "link_" + CardBridgeTokens::generate().substr(0, 8);
+  JsonObject link = doc["links"].as<JsonArray>().add<JsonObject>();
+  link["id"] = id.c_str();
+  link["from"] = from.c_str();
+  link["to"] = to.c_str();
+  link["relation"] = relation.c_str();
+  link["created_at"] = String(millis()).c_str();
+
+  String json;
+  serializeJson(doc, json);
+  if (!Storage.writeFile("/cards/links.json", json)) {
+    sendJsonError(server.get(), 500, "storage_error", "Failed to save links");
+    return;
+  }
+
+  server->send(200, "application/json", ("{\"id\":\"" + id + "\"}").c_str());
+  LOG_DBG("WEB", "Link created: %s", id.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/link/delete?id={id}
+// Response: {"ok":true}
+// ---------------------------------------------------------------------------
+void CrossPointWebServer::handleApiDeleteLink() {
+  const std::string bearer = extractBearerToken();
+  if (!requireBearerAuth(server.get(), bearer)) return;
+
+  if (!server->hasArg("id")) {
+    sendJsonError(server.get(), 400, "bad_request", "Missing id");
+    return;
+  }
+  const std::string id = server->arg("id").c_str();
+
+  if (!Storage.exists("/cards/links.json")) {
+    sendJsonError(server.get(), 404, "not_found", "No links found");
+    return;
+  }
+
+  JsonDocument doc;
+  const String existing = Storage.readFile("/cards/links.json");
+  if (deserializeJson(doc, existing) != DeserializationError::Ok) {
+    sendJsonError(server.get(), 500, "storage_error", "Corrupt links.json");
+    return;
+  }
+
+  JsonDocument newDoc;
+  JsonArray newLinks = newDoc["links"].to<JsonArray>();
+  for (JsonObject link : doc["links"].as<JsonArray>()) {
+    const char* lid = link["id"] | "";
+    if (std::string(lid) != id) {
+      newLinks.add(link);
+    }
+  }
+
+  String json;
+  serializeJson(newDoc, json);
+  Storage.writeFile("/cards/links.json", json);
+
+  server->send(200, "application/json", "{\"ok\":true}");
+  LOG_DBG("WEB", "Link deleted: %s", id.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/card/run?id={id}
+// Response: {"status":"run_requested","id":"..."}  (PoC)
+// ---------------------------------------------------------------------------
+void CrossPointWebServer::handleApiCardRun() {
+  const std::string bearer = extractBearerToken();
+  if (!requireBearerAuth(server.get(), bearer)) return;
+
+  if (!server->hasArg("id")) {
+    sendJsonError(server.get(), 400, "bad_request", "Missing id");
+    return;
+  }
+
+  const std::string id = server->arg("id").c_str();
+  const std::string cardJson = CardStore::getInstance().getCard(id);
+  if (cardJson.empty()) {
+    sendJsonError(server.get(), 404, "not_found");
+    return;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, cardJson) != DeserializationError::Ok) {
+    sendJsonError(server.get(), 400, "bad_request", "Invalid card JSON");
+    return;
+  }
+
+  const std::string type = doc["type"] | "";
+  if (type == "plugin") {
+    const std::string pluginName = doc["data"]["plugin_name"] | "";
+    if (pluginName.empty()) {
+      sendJsonError(server.get(), 400, "bad_request", "Missing plugin_name");
+      return;
+    }
+    if (runPluginCallback_) {
+      runPluginCallback_(pluginName);
+      server->send(200, "application/json", "{\"status\":\"run_requested\"}");
+    } else {
+      sendJsonError(server.get(), 503, "not_available", "No plugin runner registered");
+    }
+  } else {
+    // type == "text" / "note": displayCardCallback_ 経由で表示
+    if (displayCardCallback_) {
+      displayCardCallback_(cardJson);
+      server->send(200, "application/json", "{\"status\":\"display_requested\"}");
+    } else {
+      sendJsonError(server.get(), 503, "not_available", "No display callback registered");
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/plugins
+// Response: {"plugins": ["Snake", "Clock", ...]}
+// ---------------------------------------------------------------------------
+void CrossPointWebServer::handleApiGetPlugins() const {
+  const std::string bearer = extractBearerToken();
+  if (!requireBearerAuth(server.get(), bearer)) return;
+
+  JsonDocument resp;
+  JsonArray arr = resp["plugins"].to<JsonArray>();
+
+  FsFile root = Storage.open("/plugins");
+  if (root && root.isDirectory()) {
+    char name[256];
+    FsFile entry = root.openNextFile();
+    while (entry) {
+      entry.getName(name, sizeof(name));
+      if (entry.isDirectory() && name[0] != '.') {
+        arr.add(name);
+      }
+      entry.close();
+      entry = root.openNextFile();
+    }
+    root.close();
+  }
+
+  String json;
+  serializeJson(resp, json);
+  server->send(200, "application/json", json);
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/display/card
+// Body: {"id":"..."}
+// Triggers the display callback with the card JSON.
+// ---------------------------------------------------------------------------
+void CrossPointWebServer::handleApiDisplayCard() const {
+  const std::string bearer = extractBearerToken();
+  if (!requireBearerAuth(server.get(), bearer)) return;
+
+  if (!server->hasArg("plain")) {
+    server->send(400, "application/json", "{\"error\":\"id required\"}");
+    return;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, server->arg("plain")) != DeserializationError::Ok) {
+    server->send(400, "application/json", "{\"error\":\"invalid JSON\"}");
+    return;
+  }
+
+  const std::string id = doc["id"] | "";
+  if (id.empty()) {
+    server->send(400, "application/json", "{\"error\":\"id required\"}");
+    return;
+  }
+
+  const std::string cardJson = CARD_STORE.getCard(id);
+  if (cardJson.empty()) {
+    server->send(404, "application/json", "{\"error\":\"not found\"}");
+    return;
+  }
+
+  if (displayCardCallback_) {
+    displayCardCallback_(cardJson);
+    server->send(200, "application/json", "{\"ok\":true}");
+  } else {
+    server->send(503, "application/json", "{\"error\":\"display not available\"}");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/display/text
+// Body: {"title":"...","body":"..."}
+// Wraps title/body into a text card JSON and triggers the display callback.
+// ---------------------------------------------------------------------------
+void CrossPointWebServer::handleApiDisplayText() const {
+  const std::string bearer = extractBearerToken();
+  if (!requireBearerAuth(server.get(), bearer)) return;
+
+  if (!server->hasArg("plain")) {
+    server->send(400, "application/json", "{\"error\":\"title and body required\"}");
+    return;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, server->arg("plain")) != DeserializationError::Ok) {
+    server->send(400, "application/json", "{\"error\":\"invalid JSON\"}");
+    return;
+  }
+
+  const std::string title = doc["title"] | "";
+  const std::string body = doc["body"] | "";
+
+  // Build card JSON safely via ArduinoJson to prevent injection
+  JsonDocument cardDoc;
+  cardDoc["type"] = "text";
+  cardDoc["data"]["title"] = title;
+  cardDoc["data"]["body"] = body;
+  String cardJsonStr;
+  serializeJson(cardDoc, cardJsonStr);
+
+  if (displayCardCallback_) {
+    displayCardCallback_(cardJsonStr.c_str());
+    server->send(200, "application/json", "{\"ok\":true}");
+  } else {
+    server->send(503, "application/json", "{\"error\":\"display not available\"}");
   }
 }

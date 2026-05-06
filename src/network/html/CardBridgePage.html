@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>X4 Card Bridge</title>
+  <style>
+    :root {
+      --font-color: #333;
+      --bg: #f5f5f5;
+      --title-color: #2c3e50;
+      --card-bg: #FFF;
+      --label-color: #7f8c8d;
+      --border-color: #eee;
+      --accent-color: #2196F3;
+      --accent-hover-color: #1976D2;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --font-color: #f5f5f5;
+        --bg: #333;
+        --title-color: #ecf0f1;
+        --card-bg: #444;
+        --label-color: #bdc3c7;
+        --border-color: #555;
+        color-scheme: dark;
+      }
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+      max-width: 600px;
+      margin: 20px auto;
+      padding: 0 16px;
+      background: var(--bg);
+      color: var(--font-color);
+    }
+    h1 { color: var(--title-color); font-size: 1.4em; }
+    .card {
+      background: var(--card-bg);
+      border-radius: 8px;
+      padding: 16px;
+      margin: 8px 0;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    button {
+      background: var(--accent-color);
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-hover-color); }
+    input, textarea {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px;
+      margin: 4px 0;
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      background: var(--card-bg);
+      color: var(--font-color);
+    }
+    #status { color: var(--label-color); font-size: 0.9em; margin-bottom: 8px; }
+    .card-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .card-item:last-child { border-bottom: none; }
+    .nav-links { margin: 16px 0; display: flex; gap: 10px; }
+    .nav-links a {
+      padding: 8px 16px;
+      color: var(--font-color);
+      text-decoration: none;
+      border-radius: 4px;
+    }
+    .nav-links a.active { background: var(--accent-color); color: white; }
+    .nav-links a:not(.active):hover { background: var(--accent-hover-color); color: white; }
+    .btn-sm { padding: 4px 10px; font-size: 0.85em; margin: 0 2px; }
+    .btn-danger { background: #f44336; }
+    .btn-danger:hover { background: #d32f2f; }
+    .btn-success { background: #4CAF50; }
+    .btn-success:hover { background: #388E3C; }
+    .edit-form { background: #f9f9f9; padding: 8px; margin: 4px 0; border-radius: 4px; }
+    @media (prefers-color-scheme: dark) {
+      .edit-form { background: #3a3a3a; }
+    }
+  </style>
+</head>
+<body>
+  <h1>&#128197; X4 Card Bridge</h1>
+  <div class="nav-links">
+    <a href="/">Home</a>
+    <a href="/files">File Manager</a>
+    <a href="/settings">Settings</a>
+    <a href="/cards" class="active">Card Bridge</a>
+  </div>
+  <div id="status">&#9679; 接続中...</div>
+
+  <div id="pairing-section" class="card" style="display:none;">
+    <p>&#128275; ペアリングが必要です。ESP32 でQRコードを表示してください。</p>
+  </div>
+
+  <div id="main-section" style="display:none;">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <strong>カード一覧</strong>
+        <button onclick="showCreateForm()">+ 新しいカード</button>
+      </div>
+      <div id="create-form" style="display:none;margin-top:8px">
+        <select id="create-type" onchange="onCreateTypeChange()" style="width:100%;margin-bottom:4px">
+          <option value="text">テキスト</option>
+          <option value="plugin">プラグイン</option>
+          <option value="image">画像</option>
+        </select>
+        <div id="create-text-fields">
+          <input id="card-title" placeholder="タイトル" />
+          <textarea id="card-body" rows="3" placeholder="本文"></textarea>
+        </div>
+        <div id="create-plugin-fields" style="display:none">
+          <select id="create-plugin-name" style="width:100%">
+            <option value="">（プラグインを選択）</option>
+          </select>
+        </div>
+        <div id="create-image-fields" style="display:none">
+          <div style="margin-bottom:8px">
+            <label>タイトル</label>
+            <input type="text" id="create-image-title" placeholder="タイトル（省略可）" style="width:100%;padding:4px;box-sizing:border-box">
+          </div>
+          <div>
+            <label>BMP ファイル</label>
+            <input type="file" id="create-image-file" accept=".bmp" style="width:100%">
+          </div>
+        </div>
+        <div style="margin-top:4px">
+          <button onclick="createCard()">作成</button>
+          <button onclick="hideCreateForm()" style="background:#999;margin-left:4px">キャンセル</button>
+        </div>
+      </div>
+      <div id="card-list"></div>
+    </div>
+  </div>
+
+  <script>
+    var sessionToken = localStorage.getItem('x4cb_token') || '';
+    var heartbeatTimer = null;
+
+    function api(method, path, body) {
+      var opts = {
+        method: method,
+        headers: {'Content-Type': 'application/json'}
+      };
+      if (sessionToken) opts.headers['Authorization'] = 'Bearer ' + sessionToken;
+      if (body) opts.body = JSON.stringify(body);
+      return fetch(path, opts).then(function(r) { return r.json(); });
+    }
+
+    async function init() {
+      const params = new URLSearchParams(location.search);
+      const code = params.get('code');
+
+      if (code) {
+        try {
+          const res = await api('POST', '/api/session/claim', {pairing_token: code});
+          if (res.session_token) {
+            sessionToken = res.session_token;
+            localStorage.setItem('x4cb_token', sessionToken);
+            history.replaceState({}, '', '/cards');
+            showMain();
+            return;
+          }
+        } catch(e) {}
+      }
+
+      if (sessionToken) {
+        try {
+          const hb = await api('POST', '/api/session/heartbeat', {});
+          if (hb.next_token) {
+            sessionToken = hb.next_token;
+            localStorage.setItem('x4cb_token', sessionToken);
+            showMain();
+            return;
+          }
+        } catch(e) {}
+      }
+
+      showPairing();
+    }
+
+    function showMain() {
+      document.getElementById('pairing-section').style.display = 'none';
+      document.getElementById('main-section').style.display = 'block';
+      document.getElementById('status').textContent = '\u25CF 接続済み';
+      loadCards();
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer = setInterval(function() {
+        api('POST', '/api/session/heartbeat', {}).then(function(hb) {
+          if (hb.next_token) {
+            sessionToken = hb.next_token;
+            localStorage.setItem('x4cb_token', sessionToken);
+          }
+        });
+      }, 30000);
+    }
+
+    function showPairing() {
+      document.getElementById('pairing-section').style.display = 'block';
+      document.getElementById('main-section').style.display = 'none';
+      document.getElementById('status').textContent = '\u25CF ペアリングが必要です';
+    }
+
+    async function createCard() {
+      const type = document.getElementById('create-type').value;
+
+      if (type === 'image') {
+        await createImageCard();
+        return;
+      }
+
+      let payload;
+      if (type === 'plugin') {
+        const pluginName = document.getElementById('create-plugin-name').value;
+        if (!pluginName) { alert('プラグインを選択してください'); return; }
+        payload = {folder: '/cards/boxes/inbox', type: 'plugin', data: {title: pluginName, plugin_name: pluginName}};
+      } else {
+        const title = document.getElementById('card-title').value.trim();
+        const body = document.getElementById('card-body').value.trim();
+        if (!title) { alert('タイトルを入力してください'); return; }
+        payload = {folder: '/cards/boxes/inbox', type: 'text', data: {title, body}};
+      }
+      try {
+        const res = await api('POST', '/api/cards', payload);
+        document.getElementById('status').textContent = '作成結果: ' + JSON.stringify(res);
+        await loadCards();
+        hideCreateForm();
+      } catch(e) {
+        document.getElementById('status').textContent = '作成エラー: ' + e.message;
+      }
+    }
+
+    async function createImageCard() {
+      const file = document.getElementById('create-image-file').files[0];
+      if (!file) {
+        document.getElementById('status').textContent = 'エラー: ファイルを選択してください';
+        return;
+      }
+      const title = document.getElementById('create-image-title').value.trim() || file.name;
+
+      // Step 1: ファイルアップロード
+      document.getElementById('status').textContent = 'アップロード中...';
+      const formData = new FormData();
+      formData.append('file', file, file.name);
+
+      try {
+        const uploadRes = await fetch('/upload?path=/cards/images', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + sessionToken },
+          body: formData
+        });
+        if (!uploadRes.ok) {
+          const err = await uploadRes.text();
+          document.getElementById('status').textContent = 'アップロード失敗: ' + err;
+          return;
+        }
+
+        // Step 2: カード作成
+        const imagePath = '/cards/images/' + file.name;
+        const res = await api('POST', '/api/cards', {
+          folder: '/cards/boxes/inbox',
+          type: 'image',
+          data: { title: title, path: imagePath }
+        });
+        document.getElementById('status').textContent = '画像カード作成: ' + JSON.stringify(res).substring(0, 60);
+        if (res.id) {
+          hideCreateForm();
+          await loadCards();
+        }
+      } catch(e) {
+        document.getElementById('status').textContent = 'エラー: ' + e.message;
+      }
+    }
+
+    async function loadCards() {
+      try {
+        const res = await api('GET', '/api/cards?folder=/cards/boxes/inbox');
+        const list = document.getElementById('card-list');
+        if (!res.cards || res.cards.length === 0) {
+          list.innerHTML = '<p style="color:var(--label-color)">カードがありません</p>';
+          document.getElementById('status').textContent = 'リスト結果: 空';
+          return;
+        }
+        const cards = [...res.cards].sort((a, b) => {
+          return (b.updated_at || b.created_at || '').localeCompare(a.updated_at || a.created_at || '');
+        });
+        list.innerHTML = cards.map(c => {
+          const title = (c.data && c.data.title) ? c.data.title : '(無題)';
+          const id = c.id;
+          const escapedTitle = title.replace(/'/g, "\\'");
+          return `
+            <div class="card-item" id="card-item-${id}" style="padding:8px 0;border-bottom:1px solid var(--border-color)">
+              <span>${title} <small style="color:var(--label-color)">(${id.substring(0, 8)}...)</small></span>
+              <div>
+                <button class="btn-sm" onclick="displayCard('${id}', '${c.type}')">表示</button>
+                <button class="btn-sm" onclick="editCard('${id}', '${escapedTitle}')">編集</button>
+                <button class="btn-sm btn-danger" onclick="trashCard('${id}')">削除</button>
+              </div>
+            </div>
+          `;
+        }).join('');
+        document.getElementById('status').textContent = `${cards.length}件のカード`;
+      } catch(e) {
+        document.getElementById('status').textContent = 'リストエラー: ' + e.message;
+      }
+    }
+
+    async function editCard(id, title) {
+      try {
+        const res = await api('GET', '/api/card?id=' + id);
+        const cardData = res.data || {};
+        const currentTitle = cardData.title || title;
+        const currentBody = cardData.body || '';
+        const escapedTitle = currentTitle.replace(/"/g, '&quot;');
+        const item = document.getElementById('card-item-' + id);
+        item.innerHTML = `
+          <div class="edit-form">
+            <input id="edit-title-${id}" value="${escapedTitle}" placeholder="タイトル" style="margin-bottom:4px" />
+            <textarea id="edit-body-${id}" rows="3" placeholder="本文">${currentBody}</textarea>
+            <div style="margin-top:4px">
+              <button class="btn-sm btn-success" onclick="saveCard('${id}')">保存</button>
+              <button class="btn-sm" onclick="loadCards()">キャンセル</button>
+            </div>
+          </div>
+        `;
+      } catch(e) {
+        document.getElementById('status').textContent = '編集エラー: ' + e.message;
+      }
+    }
+
+    async function saveCard(id) {
+      const title = document.getElementById('edit-title-' + id).value.trim();
+      const body = document.getElementById('edit-body-' + id).value;
+      try {
+        const payload = {data: {title: title, body: body}};
+        document.getElementById('status').textContent = 'PUT /api/card?id=' + id + ' ' + JSON.stringify(payload).substring(0, 60);
+        const res = await api('PUT', '/api/card?id=' + id, payload);
+        document.getElementById('status').textContent = '保存結果: id=' + id + ' res=' + JSON.stringify(res);
+        if (res.status === 'ok') {
+          await loadCards();
+        }
+      } catch(e) {
+        document.getElementById('status').textContent = '保存エラー: ' + e.message;
+      }
+    }
+
+    async function trashCard(id) {
+      const title = document.querySelector(`#card-item-${id} span`)?.textContent || id;
+      if (!confirm(`「${title}」を削除しますか？`)) return;
+      const res = await api('POST', '/api/card/trash?id=' + id, {});
+      document.getElementById('status').textContent = '削除: ' + JSON.stringify(res).substring(0, 50);
+      await loadCards();
+    }
+
+    function showCreateForm() {
+      document.getElementById('create-form').style.display = 'block';
+      fetchPluginsForCreate();
+    }
+    function hideCreateForm() {
+      document.getElementById('create-form').style.display = 'none';
+      document.getElementById('create-type').value = 'text';
+      document.getElementById('create-text-fields').style.display = 'block';
+      document.getElementById('create-plugin-fields').style.display = 'none';
+      document.getElementById('create-image-fields').style.display = 'none';
+      document.getElementById('card-title').value = '';
+      document.getElementById('card-body').value = '';
+      document.getElementById('create-image-title').value = '';
+      document.getElementById('create-image-file').value = '';
+    }
+
+    function displayCard(id, type) {
+      if (type === 'plugin') {
+        api('POST', '/api/card/run?id=' + id, {}).then(function(res) {
+          document.getElementById('status').textContent = '表示: ' + JSON.stringify(res).substring(0, 60);
+        });
+      } else {
+        api('POST', '/api/display/card', {id: id}).then(function(res) {
+          document.getElementById('status').textContent = '表示: ' + JSON.stringify(res).substring(0, 60);
+        });
+      }
+    }
+
+    async function onCreateTypeChange() {
+      const type = document.getElementById('create-type').value;
+      const textFields = document.getElementById('create-text-fields');
+      const pluginFields = document.getElementById('create-plugin-fields');
+      const imageFields = document.getElementById('create-image-fields');
+
+      textFields.style.display = type === 'text' ? '' : 'none';
+      pluginFields.style.display = type === 'plugin' ? '' : 'none';
+      imageFields.style.display = type === 'image' ? '' : 'none';
+
+      if (type === 'plugin') {
+        await fetchPluginsForCreate();
+      }
+    }
+
+    async function fetchPluginsForCreate() {
+      try {
+        const res = await api('GET', '/api/plugins');
+        const sel = document.getElementById('create-plugin-name');
+        sel.innerHTML = '<option value="">（プラグインを選択）</option>';
+        if (res.plugins) {
+          res.plugins.forEach(function(name) {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            sel.appendChild(opt);
+          });
+        }
+      } catch(e) {}
+    }
+
+    init();
+  </script>
+</body>
+</html>

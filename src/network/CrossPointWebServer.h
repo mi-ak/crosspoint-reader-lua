@@ -5,6 +5,7 @@
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -68,6 +69,16 @@ class CrossPointWebServer {
   // Get the port number
   uint16_t getPort() const { return port; }
 
+  // Set callback invoked when a display card request is received
+  void setDisplayCardCallback(std::function<void(const std::string&)> cb) {
+    displayCardCallback_ = std::move(cb);
+  }
+
+  // Set callback invoked when a plugin run request is received
+  void setRunPluginCallback(std::function<void(const std::string&)> cb) {
+    runPluginCallback_ = std::move(cb);
+  }
+
  private:
   std::unique_ptr<WebServer> server = nullptr;
   std::unique_ptr<WebSocketsServer> wsServer = nullptr;
@@ -105,4 +116,46 @@ class CrossPointWebServer {
   void handleSettingsPage() const;
   void handleGetSettings() const;
   void handlePostSettings();
+
+  // Card Bridge page
+  void handleCardBridgePage() const;
+
+  // Card Bridge handlers
+  void handleCardBridgePair() const;
+  void handleCardBridgeClaim();
+  void handleCardBridgeHeartbeat();
+  void handleCardBridgeClose();
+
+  // Card API handlers (Phase 2)
+  void handleApiGetCards() const;
+  void handleApiPostCards();
+  void handleApiGetCard() const;
+  void handleApiPutCard();
+  void handleApiMoveCard();
+  void handleApiTrashCard();
+  void handleApiRestoreCard();
+
+  // Folder API handlers (Phase 2)
+  void handleApiGetFolders() const;
+  void handleApiPostFolders();
+
+  // Link API handlers (Phase 4)
+  void handleApiGetLinks() const;
+  void handleApiPostLinks();
+  void handleApiDeleteLink();
+
+  // Card Run API
+  void handleApiCardRun();
+  void handleApiGetPlugins() const;
+
+  // Display API handlers
+  void handleApiDisplayCard() const;
+  void handleApiDisplayText() const;
+
+  // Display callback (set via setDisplayCardCallback)
+  std::function<void(const std::string&)> displayCardCallback_;
+  std::function<void(const std::string&)> runPluginCallback_;
+
+  // Card Bridge helper: extract Bearer token from Authorization header
+  std::string extractBearerToken() const;
 };

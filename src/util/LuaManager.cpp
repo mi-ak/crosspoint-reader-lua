@@ -1,6 +1,7 @@
 #include "LuaManager.h"
 #include <Arduino.h>
 #include <esp_random.h>
+#include "CardStore.h"
 #include <HalStorage.h>
 #include <GfxRenderer.h>
 #include <Bitmap.h>
@@ -621,6 +622,86 @@ static int l_time_format_clock(lua_State* L) {
     return 1;
 }
 
+// ─── ctx.* ───────────────────────────────────────────────────────────────────
+
+// Minimal JSON string escaper for ctx.display.showText
+static std::string ctx_json_escape(const char* s) {
+    std::string out;
+    while (*s) {
+        unsigned char c = (unsigned char)*s++;
+        if      (c == '"')  { out += "\\\""; }
+        else if (c == '\\') { out += "\\\\"; }
+        else if (c == '\n') { out += "\\n"; }
+        else if (c == '\r') { out += "\\r"; }
+        else if (c == '\t') { out += "\\t"; }
+        else                { out += (char)c; }
+    }
+    return out;
+}
+
+// ctx.cards.get(id) → json_string | nil
+static int lua_ctx_cards_get(lua_State* L) {
+    const char* id = luaL_checkstring(L, 1);
+    std::string result = CARD_STORE.getCard(std::string(id));
+    if (result.empty()) {
+        lua_pushnil(L);
+    } else {
+        lua_pushstring(L, result.c_str());
+    }
+    return 1;
+}
+
+// ctx.cards.list(folder) → table of card IDs
+static int lua_ctx_cards_list(lua_State* L) {
+    const char* folder = luaL_checkstring(L, 1);
+    std::vector<std::string> ids = CARD_STORE.listCards(std::string(folder));
+    lua_newtable(L);
+    for (int i = 0; i < (int)ids.size(); i++) {
+        lua_pushstring(L, ids[i].c_str());
+        lua_rawseti(L, -2, i + 1);
+    }
+    return 1;
+}
+
+// ctx.display.showText(title, body) → bool
+static int lua_ctx_display_show_text(lua_State* L) {
+    const char* title = luaL_checkstring(L, 1);
+    const char* body  = luaL_checkstring(L, 2);
+    lua_getfield(L, LUA_REGISTRYINDEX, "lua_manager_ptr");
+    LuaManager* mgr = (LuaManager*)lua_touserdata(L, -1);
+    lua_pop(L, 1);
+    if (mgr) {
+        std::string cardJson = std::string("{\"type\":\"text\",\"data\":{\"title\":\"")
+                               + ctx_json_escape(title) + "\",\"body\":\""
+                               + ctx_json_escape(body) + "\"}}";
+        lua_pushboolean(L, mgr->callDisplayCard(cardJson) ? 1 : 0);
+    } else {
+        // TODO: ctx.display.showText — LuaManager* not found in registry
+        lua_pushboolean(L, 0);
+    }
+    return 1;
+}
+
+// ctx.display.showCard(id) → bool
+static int lua_ctx_display_show_card(lua_State* L) {
+    const char* id = luaL_checkstring(L, 1);
+    lua_getfield(L, LUA_REGISTRYINDEX, "lua_manager_ptr");
+    LuaManager* mgr = (LuaManager*)lua_touserdata(L, -1);
+    lua_pop(L, 1);
+    if (mgr) {
+        std::string cardJson = CARD_STORE.getCard(std::string(id));
+        if (cardJson.empty()) {
+            lua_pushboolean(L, 0);
+        } else {
+            lua_pushboolean(L, mgr->callDisplayCard(cardJson) ? 1 : 0);
+        }
+    } else {
+        // TODO: ctx.display.showCard — LuaManager* not found in registry
+        lua_pushboolean(L, 0);
+    }
+    return 1;
+}
+
 } // extern "C"
 
 // ─── LuaManager ──────────────────────────────────────────────────────────────
@@ -754,6 +835,20 @@ void LuaManager::registerBindings() {
     lua_pushcfunction(L, l_time_format_date);   lua_setfield(L, -2, "formatDate");
     lua_pushcfunction(L, l_time_format_clock);  lua_setfield(L, -2, "formatClock");
     lua_setglobal(L, "time");
+
+    // ctx.*
+    // ctx.cards sub-table
+    lua_newtable(L);                         // ctx
+    lua_newtable(L);                         // ctx.cards
+    lua_pushcfunction(L, lua_ctx_cards_get);  lua_setfield(L, -2, "get");
+    lua_pushcfunction(L, lua_ctx_cards_list); lua_setfield(L, -2, "list");
+    lua_setfield(L, -2, "cards");
+    // ctx.display sub-table
+    lua_newtable(L);                                    // ctx.display
+    lua_pushcfunction(L, lua_ctx_display_show_text); lua_setfield(L, -2, "showText");
+    lua_pushcfunction(L, lua_ctx_display_show_card); lua_setfield(L, -2, "showCard");
+    lua_setfield(L, -2, "display");
+    lua_setglobal(L, "ctx");
 
     // Refresh mode constants
     lua_pushinteger(L, HalDisplay::FULL_REFRESH); lua_setglobal(L, "REFRESH_FULL");
