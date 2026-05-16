@@ -82,6 +82,8 @@ void PairingActivity::onEnter() {
 
 void PairingActivity::onExit() {
   webServer_.reset();
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
   ActivityWithSubactivity::onExit();
 }
 
@@ -132,8 +134,9 @@ void PairingActivity::loop() {
     LuaManager::getInstance().end();
     // WiFi を切断してメモリを解放（プラグインに必要なヒープを確保）
     WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
     delay(100);
-    LOG_DBG("PAIR", "runPlugin: heap after wifi disconnect=%d", ESP.getFreeHeap());
+    LOG_DBG("PAIR", "runPlugin: heap after wifi disconnect+off=%d", ESP.getFreeHeap());
     if (goPlugin_) {
       goPlugin_(pluginName);
     }

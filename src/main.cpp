@@ -38,6 +38,7 @@
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
 #include "util/LuaManager.h"
+#include "util/SerialShell.h"
 
 #include "util/TimeService.h"
 #include "CardBridgeManager.h"
@@ -48,6 +49,7 @@ MappedInputManager mappedInputManager(gpio);
 GfxRenderer renderer(display);
 FontDecompressor fontDecompressor;
 Activity* currentActivity;
+SerialShell serialShell;
 unsigned long lastActivityMillis = 0;
 
 // Fonts
@@ -243,7 +245,7 @@ void setupDisplayAndFonts() {
 
 void setup() {
   gpio.begin(); powerManager.begin();
-  if (gpio.isUsbConnected()) { Serial.begin(115200); unsigned long s = millis(); while (!Serial && (millis()-s) < 3000) delay(10); }
+  if (gpio.isUsbConnected()) { Serial.begin(115200); unsigned long s = millis(); while (!Serial && (millis()-s) < 3000) delay(10); serialShell.begin(); }
   if (!Storage.begin()) {
     setupDisplayAndFonts();
     enterNewActivity(new FullScreenMessageActivity(renderer, mappedInputManager, "SD card error", EpdFontFamily::BOLD));
@@ -289,6 +291,7 @@ void setup() {
 }
 
 void loop() {
+  serialShell.tick();
   if (nextActivity) { Activity* a = nextActivity; nextActivity = nullptr; exitActivity(); currentActivity = a; currentActivity->onEnter(); lastActivityMillis = millis(); }
   mappedInputManager.update();
 
@@ -298,6 +301,14 @@ void loop() {
 
   if (TIME_SERVICE.syncIfDue() && currentActivity) {
     currentActivity->requestUpdate();
+  }
+  // Persist time anchor periodically so RTC-backed time survives power cycles
+  {
+    static unsigned long lastTimePersistMs = 0;
+    if (millis() - lastTimePersistMs >= 5UL * 60UL * 1000UL) {
+      lastTimePersistMs = millis();
+      TIME_SERVICE.persistIfValid();
+    }
   }
   renderer.setFadingFix(SETTINGS.fadingFix);
   if (currentActivity && currentActivity->preventAutoSleep()) {
